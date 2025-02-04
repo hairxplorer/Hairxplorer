@@ -11,7 +11,8 @@ class ProhairWidget {
         <form id="prohair-form">
           <input type="text" name="name" placeholder="Nom" required>
           <input type="tel" name="phone" placeholder="Téléphone" required>
-          <input type="email" name="email" placeholder="Email" required>
+          <!-- Renommé de 'email' à 'client_email' pour correspondre à l'endpoint -->
+          <input type="email" name="client_email" placeholder="Email" required>
           <textarea name="message" placeholder="Message"></textarea>
           <div class="photo-upload">
             <input type="file" accept="image/*" name="front" required>
@@ -49,8 +50,7 @@ class ProhairWidget {
       e.preventDefault();
       console.log("Soumission du formulaire détectée");
       const formData = new FormData(e.target);
-      // La case à cocher 'consent' est envoyée en tant que chaîne "on" si cochée.
-      // FastAPI la convertira en booléen si on utilise "consent: bool = Form(...)".
+      // Ajoute la clé API dans le formulaire
       formData.append("api_key", this.apiKey);
       try {
         const result = await this.sendAnalysis(formData);
