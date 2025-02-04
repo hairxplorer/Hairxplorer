@@ -15,17 +15,16 @@ app = FastAPI()
 # Configuration CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Autoriser toutes les origines
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Type", "Content-Length"]
 )
 
-# Monter le dossier static pour servir les fichiers JS et CSS (pour le widget web)
+# Monter le dossier static (pour le widget web, par exemple)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Initialisation de la base de données (pour les cliniques, si besoin)
 def init_db():
     os.makedirs('clinics', exist_ok=True)
     with sqlite3.connect('clinics/config.db') as conn:
@@ -49,7 +48,7 @@ async def analyze(
     api_key: str = Form(...)
 ):
     try:
-        # Lecture et redimensionnement des images
+        # Traitement et redimensionnement des images
         images = [
             Image.open(BytesIO(await front.read())).resize((512, 512)),
             Image.open(BytesIO(await top.read())).resize((512, 512)),
@@ -75,22 +74,22 @@ async def analyze(
         if not openai_api_key:
             raise HTTPException(status_code=500, detail="Clé OpenAI introuvable dans les variables d'environnement.")
 
-        # Création du client OpenAI et appel du modèle textuel (ici gpt-4)
         client = OpenAI(api_key=openai_api_key)
+        # Demande d'une réponse JSON strict incluant un champ "evaluation"
         response = client.chat.completions.create(
-            model="gpt-4",  # Modèle textuel valide
+            model="gpt-4",  # Utilise un modèle textuel valide
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Donne-moi uniquement une réponse en JSON strict, sans commentaires additionnels. "
-                                "La réponse doit être exactement de la forme: "
-                                "{\"stade\": \"1-7\", \"price_range\": \"1500-2000€\", \"details\": \"Quelques détails d'analyse.\"}"
-                            )
-                        }
+                        {"type": "text", "text": (
+                            "Donne-moi uniquement une réponse en JSON strict, sans commentaires additionnels. "
+                            "La réponse doit être exactement de la forme: "
+                            "{\"stade\": \"<valeur sur l'échelle Norwood-Hamilton>\", "
+                            "\"price_range\": \"<fourchette tarifaire>\", "
+                            "\"details\": \"<description détaillée de l'analyse>\", "
+                            "\"evaluation\": \"<résultat de l'évaluation sur l'échelle Norwood-Hamilton>\"}"
+                        )}
                     ]
                 }
             ],
@@ -100,7 +99,7 @@ async def analyze(
         raw_response = response.choices[0].message.content
         print("DEBUG: Réponse OpenAI =", raw_response)
 
-        # Extraction du JSON de la réponse brute à l'aide d'une expression régulière
+        # Extraction du JSON à partir de la réponse brute
         match = re.search(r'\{.*\}', raw_response, re.DOTALL)
         if not match:
             raise Exception("Aucun JSON trouvé dans la réponse.")
@@ -120,5 +119,4 @@ def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    # Railway définit le port via la variable d'environnement PORT
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
