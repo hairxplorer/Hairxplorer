@@ -3,6 +3,7 @@ import base64
 import sqlite3
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles  # Ajouté ici
 from openai import OpenAI
 from PIL import Image
 from io import BytesIO
@@ -17,6 +18,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Monter le dossier static pour servir les fichiers JS et CSS
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialisation base de données
 def init_db():
