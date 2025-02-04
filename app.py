@@ -30,7 +30,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 def init_db():
     os.makedirs('clinics', exist_ok=True)
-    # Table clinics : on ajoute un champ pricing pour stocker la config tarifaire sous forme de JSON
+    # Table clinics : on stocke aussi la configuration tarifaire et l'e-mail de la clinique
     with sqlite3.connect('clinics/config.db') as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS clinics (
@@ -55,7 +55,7 @@ def init_db():
 init_db()
 
 def get_clinic_config(api_key: str):
-    """Récupère la configuration d'une clinique à partir de la base de données."""
+    """Récupère la configuration d'une clinique depuis la base de données."""
     with sqlite3.connect('clinics/config.db') as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT email_clinique, pricing FROM clinics WHERE api_key = ?", (api_key,))
@@ -78,7 +78,6 @@ def save_analysis(clinic_api_key: str, client_email: str, result: dict):
 
 def send_email(to_email: str, subject: str, body: str):
     """Envoie un e-mail via SMTP (à configurer selon ton fournisseur)"""
-    # Exemple de configuration SMTP – adapte avec tes identifiants
     SMTP_SERVER = "smtp.example.com"
     SMTP_PORT = 587
     SMTP_USER = "ton_email@example.com"
@@ -101,13 +100,12 @@ async def analyze(
     side: UploadFile = File(...),
     back: UploadFile = File(...),
     api_key: str = Form(...),
-    client_email: str = Form(...),  # Nouveau champ pour l'e-mail du client
-    consent: bool = Form(...)         # Champ pour la case à cocher (doit être True)
+    client_email: str = Form(...),
+    consent: bool = Form(...)
 ):
     if not consent:
         raise HTTPException(status_code=400, detail="Vous devez accepter que vos données soient utilisées pour vous recontacter.")
     try:
-        # Traitement et redimensionnement des images
         images = [
             Image.open(BytesIO(await front.read())).resize((512, 512)),
             Image.open(BytesIO(await top.read())).resize((512, 512)),
@@ -154,7 +152,6 @@ async def analyze(
         raw_response = response.choices[0].message.content
         print("DEBUG: Réponse OpenAI =", raw_response)
 
-        # Extraction du JSON à l'aide d'une expression régulière
         match = re.search(r'\{.*\}', raw_response, re.DOTALL)
         if not match:
             raise Exception("Aucun JSON trouvé dans la réponse.")
@@ -163,25 +160,20 @@ async def analyze(
 
         json_result = json.loads(json_str)
 
-        # Récupérer la configuration de la clinique pour ajuster le tarif
         clinic_config = get_clinic_config(api_key)
         if clinic_config and "pricing" in clinic_config:
-            pricing = clinic_config["pricing"]  # par exemple, {"7": 4000, "6": 3500, "5": 3000}
-            # Si la réponse contient le stade (ici supposons qu'il soit en chaîne ou nombre)
+            pricing = clinic_config["pricing"]
             stade = json_result.get("stade", "").strip()
             if stade and stade in pricing:
                 json_result["price_range"] = f"{pricing[stade]}€"
         
-        # Enregistrer l'analyse dans la base de données
         save_analysis(api_key, client_email, json_result)
 
-        # Envoyer un mail à la clinique avec le résultat (si la configuration de mail est disponible)
         if clinic_config and clinic_config.get("email_clinique"):
             sujet = "Nouvelle analyse de calvitie"
             corps = f"Voici le résultat de l'analyse effectuée pour un client ({client_email}) :\n\n{json.dumps(json_result, indent=2)}"
             send_email(clinic_config["email_clinique"], sujet, corps)
         
-        # Envoyer un mail de confirmation au client
         sujet_client = "Votre analyse de calvitie"
         corps_client = f"Bonjour,\n\nVoici le résultat de votre analyse :\n\n{json.dumps(json_result, indent=2)}\n\nNous vous remercions de votre confiance."
         send_email(client_email, sujet_client, corps_client)
