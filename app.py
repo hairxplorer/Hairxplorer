@@ -25,7 +25,7 @@ app.add_middleware(
     expose_headers=["Content-Type", "Content-Length"]
 )
 
-# Monter le dossier static
+# Monter le dossier static (pour le widget web)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 def init_db():
@@ -39,7 +39,7 @@ def init_db():
                 pricing TEXT  -- Exemple: '{"7": 4000, "6": 3500, "5": 3000}'
             )
         ''')
-        # Table analyses : pour enregistrer chaque analyse effectuée
+        # Table analyses : enregistrement de chaque analyse
         conn.execute('''
             CREATE TABLE IF NOT EXISTS analyses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,12 +77,12 @@ def save_analysis(clinic_api_key: str, client_email: str, result: dict):
         conn.commit()
 
 def send_email(to_email: str, subject: str, body: str):
-    """Envoie un e-mail via SMTP (à configurer selon ton fournisseur)"""
-    SMTP_SERVER = "smtp.example.com"
-    SMTP_PORT = 587
-    SMTP_USER = "ton_email@example.com"
-    SMTP_PASSWORD = "ton_mot_de_passe"
-    
+    """Envoie un e-mail via SMTP (à adapter selon ton fournisseur)."""
+    SMTP_SERVER = "smtp.example.com"   # Remplace par ton serveur SMTP
+    SMTP_PORT = 587                    # Remplace par ton port SMTP
+    SMTP_USER = "ton_email@example.com"  # Remplace par ton e-mail
+    SMTP_PASSWORD = "ton_mot_de_passe"     # Remplace par ton mot de passe
+
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = SMTP_USER
@@ -106,6 +106,7 @@ async def analyze(
     if not consent:
         raise HTTPException(status_code=400, detail="Vous devez accepter que vos données soient utilisées pour vous recontacter.")
     try:
+        # Traitement et redimensionnement des images
         images = [
             Image.open(BytesIO(await front.read())).resize((512, 512)),
             Image.open(BytesIO(await top.read())).resize((512, 512)),
@@ -130,7 +131,7 @@ async def analyze(
 
         client = OpenAI(api_key=openai_api_key)
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4",  # Utilise un modèle textuel valide
             messages=[
                 {
                     "role": "user",
@@ -160,9 +161,10 @@ async def analyze(
 
         json_result = json.loads(json_str)
 
+        # Ajustement du tarif en fonction du stade et de la configuration de la clinique
         clinic_config = get_clinic_config(api_key)
         if clinic_config and "pricing" in clinic_config:
-            pricing = clinic_config["pricing"]
+            pricing = clinic_config["pricing"]  # Exemple: {"7": 4000, "6": 3500, "5": 3000}
             stade = json_result.get("stade", "").strip()
             if stade and stade in pricing:
                 json_result["price_range"] = f"{pricing[stade]}€"
@@ -187,6 +189,10 @@ async def analyze(
 @app.get("/")
 def health_check():
     return {"status": "online"}
+
+# Inclusion du routeur d'administration
+from admin import router as admin_router
+app.include_router(admin_router, prefix="/admin")
 
 if __name__ == "__main__":
     import uvicorn
