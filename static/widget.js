@@ -19,10 +19,6 @@ class ProhairWidget {
             <input type="file" accept="image/*" name="side" required>
             <input type="file" accept="image/*" name="back" required>
           </div>
-          <label>
-            <input type="checkbox" name="consent" required>
-            J'accepte les <a href="#" class="privacy-link">conditions d'utilisation</a>
-          </label>
           <button type="submit">Obtenir l'estimation</button>
         </form>
         <div class="result"></div>
