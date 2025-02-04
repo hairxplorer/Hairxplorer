@@ -14,10 +14,11 @@ app = FastAPI()
 # Configuration CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Autoriser toutes les origines
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Autoriser toutes les méthodes
+    allow_headers=["*"],  # Autoriser tous les headers
+    expose_headers=["Content-Type", "Content-Length"]  # Headers exposés
 )
 
 # Monter le dossier static pour servir les fichiers JS et CSS
