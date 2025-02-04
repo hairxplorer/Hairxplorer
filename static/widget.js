@@ -27,7 +27,6 @@ class ProhairWidget {
         <div class="result"></div>
       </div>
     `;
-    // Insertion du widget dans l'élément avec l'ID "widget-container" si présent
     const container = document.getElementById('widget-container');
     if (container) {
       container.innerHTML = formHTML;
@@ -52,8 +51,7 @@ class ProhairWidget {
   }
 
   async sendAnalysis(formData) {
-    // Remplacez l'URL par celle de votre API Railway
-    const response = await fetch('https://last-father-production.up.railway.app/analyze', {
+    const response = await fetch('https://hairxplorer-production.up.railway.app/analyze', {
       method: 'POST',
       body: formData
     });
@@ -62,8 +60,8 @@ class ProhairWidget {
 
   displayResult(data) {
     document.querySelector('.result').innerHTML = `
-      <h3>Estimation : ${data.price_range}</h3>
-      <p>${data.details}</p>
+      <h3>Estimation : ${data.price_range || "N/A"}</h3>
+      <p>${data.details || "Aucun détail disponible"}</p>
     `;
   }
 }
