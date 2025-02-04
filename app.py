@@ -2,6 +2,7 @@ import os
 import base64
 import sqlite3
 import json
+import re
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,17 +17,16 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Autoriser toutes les origines
     allow_credentials=True,
-    allow_methods=["*"],  # Autoriser toutes les méthodes
-    allow_headers=["*"],  # Autoriser tous les headers
-    expose_headers=["Content-Type", "Content-Length"]  # Headers exposés
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Type", "Content-Length"]
 )
 
-# Monter le dossier static pour servir les fichiers JS et CSS
+# Monter le dossier static pour servir les fichiers JS et CSS (pour le widget web)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Initialisation de la base de données
+# Initialisation de la base de données (pour les cliniques, si besoin)
 def init_db():
-    # Crée le dossier 'clinics' s'il n'existe pas
     os.makedirs('clinics', exist_ok=True)
     with sqlite3.connect('clinics/config.db') as conn:
         conn.execute('''
@@ -49,7 +49,7 @@ async def analyze(
     api_key: str = Form(...)
 ):
     try:
-        # Traitement et redimensionnement des images
+        # Lecture et redimensionnement des images
         images = [
             Image.open(BytesIO(await front.read())).resize((512, 512)),
             Image.open(BytesIO(await top.read())).resize((512, 512)),
@@ -64,39 +64,50 @@ async def analyze(
         grid.paste(images[2], (0, 512))
         grid.paste(images[3], (512, 512))
 
-        # Conversion de la grille en image JPEG en base64
+        # Conversion de la grille en image JPEG et encodage en base64
         buffered = BytesIO()
         grid.save(buffered, format="JPEG", quality=100)
         b64_image = base64.b64encode(buffered.getvalue()).decode()
 
-        # Debug : vérifier la clé OpenAI
+        # Récupération de la clé OpenAI depuis les variables d'environnement
         openai_api_key = os.getenv("OPENAI_API_KEY")
         print("DEBUG: OpenAI API Key =", openai_api_key)
         if not openai_api_key:
             raise HTTPException(status_code=500, detail="Clé OpenAI introuvable dans les variables d'environnement.")
 
-        # Appel à l'API OpenAI
+        # Création du client OpenAI et appel du modèle textuel (ici gpt-4)
         client = OpenAI(api_key=openai_api_key)
         response = client.chat.completions.create(
-            model="gpt-4-vision-preview",
+            model="gpt-4",  # Modèle textuel valide
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        # On force ici un format JSON connu pour faciliter le test.
-                        {"type": "text", "text": "Analyse Norwood-Hamilton - Réponse JSON : {\"stade\": \"1-7\", \"price_range\": \"1500-2000€\", \"details\": \"Quelques détails d'analyse.\"}"},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                        {
+                            "type": "text",
+                            "text": (
+                                "Donne-moi uniquement une réponse en JSON strict, sans commentaires additionnels. "
+                                "La réponse doit être exactement de la forme: "
+                                "{\"stade\": \"1-7\", \"price_range\": \"1500-2000€\", \"details\": \"Quelques détails d'analyse.\"}"
+                            )
+                        }
                     ]
                 }
             ],
             max_tokens=300
         )
 
-        # Debug : afficher la réponse brute d'OpenAI
-        print("DEBUG: Réponse OpenAI =", response.choices[0].message.content)
+        raw_response = response.choices[0].message.content
+        print("DEBUG: Réponse OpenAI =", raw_response)
 
-        # Décodage de la réponse OpenAI (on suppose que c'est une chaîne JSON valide)
-        json_result = json.loads(response.choices[0].message.content)
+        # Extraction du JSON de la réponse brute à l'aide d'une expression régulière
+        match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+        if not match:
+            raise Exception("Aucun JSON trouvé dans la réponse.")
+        json_str = match.group(0)
+        print("DEBUG: JSON extrait =", json_str)
+
+        json_result = json.loads(json_str)
         return json_result
 
     except Exception as e:
@@ -109,4 +120,5 @@ def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Railway définit le port via la variable d'environnement PORT
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
