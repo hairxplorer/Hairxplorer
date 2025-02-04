@@ -8,7 +8,8 @@ router = APIRouter()
 templates = Jinja2Templates(directory="admin/templates")
 
 def get_db():
-    conn = sqlite3.connect('clinics/config.db')
+    # Ajout de check_same_thread=False pour permettre l'utilisation dans différents threads
+    conn = sqlite3.connect('clinics/config.db', check_same_thread=False)
     try:
         yield conn
     finally:
@@ -34,7 +35,6 @@ async def admin_dashboard(request: Request, db: sqlite3.Connection = Depends(get
             })
         return templates.TemplateResponse("dashboard.html", {"request": request, "clinics": clinic_list})
     except Exception as e:
-        # Retourne une page d'erreur détaillée pour le débogage
         return HTMLResponse(f"<h1>Erreur dans le dashboard admin</h1><p>{str(e)}</p>", status_code=500)
 
 @router.get("/edit/{api_key}", response_class=HTMLResponse)
@@ -48,7 +48,7 @@ async def edit_clinic(request: Request, api_key: str, db: sqlite3.Connection = D
         api_key_val, email, pricing = row
         try:
             pricing_dict = json.loads(pricing) if pricing else {}
-        except Exception as e:
+        except Exception:
             pricing_dict = {}
         return templates.TemplateResponse("edit_clinic.html", {"request": request, "clinic": {"api_key": api_key_val, "email_clinique": email, "pricing": pricing_dict}})
     except Exception as e:
@@ -57,7 +57,7 @@ async def edit_clinic(request: Request, api_key: str, db: sqlite3.Connection = D
 @router.post("/edit/{api_key}")
 async def update_clinic(api_key: str, email_clinique: str = Form(...), pricing_json: str = Form(...), db: sqlite3.Connection = Depends(get_db)):
     try:
-        json.loads(pricing_json)  # Validation du JSON
+        json.loads(pricing_json)
     except Exception as e:
         raise HTTPException(status_code=400, detail="Le champ Pricing doit être un JSON valide.")
     try:
