@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Liste des Analyses</title>
+</head>
+<body>
+  <h1>Analyses effectuées</h1>
+  <table border="1">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>API Key Clinique</th>
+        <th>Email Client</th>
+        <th>Résultat</th>
+        <th>Timestamp</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for analysis in analyses %}
+      <tr>
+        <td>{{ analysis.id }}</td>
+        <td>{{ analysis.clinic_api_key }}</td>
+        <td>{{ analysis.client_email }}</td>
+        <td><pre>{{ analysis.result | tojson(indent=2) }}</pre></td>
+        <td>{{ analysis.timestamp }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <br>
+  <a href="/admin">Retour au Tableau de Bord</a>
+</body>
+</html>

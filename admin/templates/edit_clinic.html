@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Modifier la Clinique</title>
+</head>
+<body>
+  <h1>Modifier la configuration de la clinique</h1>
+  <form method="post" action="/admin/edit/{{ clinic.api_key }}">
+    <label for="email_clinique">Email Clinique:</label>
+    <input type="email" name="email_clinique" id="email_clinique" value="{{ clinic.email_clinique }}" required><br><br>
+    
+    <label for="pricing_json">Pricing (JSON):</label><br>
+    <textarea name="pricing_json" id="pricing_json" rows="5" cols="50" required>{{ clinic.pricing | tojson(indent=2) }}</textarea><br><br>
+    
+    <button type="submit">Enregistrer</button>
+  </form>
+  <br>
+  <a href="/admin">Retour au Tableau de Bord</a>
+</body>
+</html>
