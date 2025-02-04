@@ -25,7 +25,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialisation de la base de données
 def init_db():
-    # Crée le dossier clinics s'il n'existe pas
+    # Crée le dossier 'clinics' s'il n'existe pas
     os.makedirs('clinics', exist_ok=True)
     with sqlite3.connect('clinics/config.db') as conn:
         conn.execute('''
@@ -68,8 +68,14 @@ async def analyze(
         grid.save(buffered, format="JPEG", quality=100)
         b64_image = base64.b64encode(buffered.getvalue()).decode()
 
+        # Debug : vérifier la clé OpenAI
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        print("DEBUG: OpenAI API Key =", openai_api_key)
+        if not openai_api_key:
+            raise HTTPException(status_code=500, detail="Clé OpenAI introuvable dans les variables d'environnement.")
+
         # Appel à l'API OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = OpenAI(api_key=openai_api_key)
         response = client.chat.completions.create(
             model="gpt-4-vision-preview",
             messages=[
@@ -84,12 +90,16 @@ async def analyze(
             ],
             max_tokens=300
         )
-        
+
+        # Debug : afficher la réponse brute d'OpenAI
+        print("DEBUG: Réponse OpenAI =", response.choices[0].message.content)
+
         # Décodage de la réponse OpenAI (on suppose que c'est une chaîne JSON valide)
         json_result = json.loads(response.choices[0].message.content)
         return json_result
 
     except Exception as e:
+        print("DEBUG: Exception =", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
