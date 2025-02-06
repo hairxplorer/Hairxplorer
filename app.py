@@ -5,7 +5,7 @@ import json
 import re
 import smtplib
 from email.mime.text import MIMEText
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -30,16 +30,19 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 def init_db():
     os.makedirs('clinics', exist_ok=True)
-    # Table clinics : on stocke aussi la configuration tarifaire et l'e-mail de la clinique
+    # Création de la table clinics avec les colonnes supplémentaires pour la gestion mensuelle du quota
     with sqlite3.connect('clinics/config.db') as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS clinics (
                 api_key TEXT PRIMARY KEY,
                 email_clinique TEXT,
-                pricing TEXT  -- Exemple: '{"7": 4000, "6": 3500, "5": 3000}'
+                pricing TEXT,  -- Exemple: '{"7": 4000, "6": 3500, "5": 3000}'
+                analysis_quota INTEGER,
+                default_quota INTEGER,
+                subscription_start TEXT
             )
         ''')
-        # Table analyses : enregistrement de chaque analyse
+        # Table analyses : enregistrement de chaque analyse effectuée
         conn.execute('''
             CREATE TABLE IF NOT EXISTS analyses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,24 +59,39 @@ init_db()
 
 def get_clinic_config(api_key: str):
     """Récupère la configuration d'une clinique depuis la base de données."""
-    with sqlite3.connect('clinics/config.db') as conn:
+    with sqlite3.connect('clinics/config.db', check_same_thread=False) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT email_clinique, pricing FROM clinics WHERE api_key = ?", (api_key,))
+        cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
         row = cursor.fetchone()
         if row:
-            email_clinique, pricing_str = row
+            email_clinique, pricing_str, analysis_quota, default_quota, subscription_start = row
             pricing = json.loads(pricing_str) if pricing_str else {}
-            return {"email_clinique": email_clinique, "pricing": pricing}
+            return {
+                "email_clinique": email_clinique,
+                "pricing": pricing,
+                "analysis_quota": analysis_quota,
+                "default_quota": default_quota,
+                "subscription_start": subscription_start
+            }
     return None
 
 def save_analysis(clinic_api_key: str, client_email: str, result: dict):
     """Enregistre une analyse dans la base de données."""
     timestamp = datetime.utcnow().isoformat()
-    with sqlite3.connect('clinics/config.db') as conn:
+    with sqlite3.connect('clinics/config.db', check_same_thread=False) as conn:
         conn.execute(
             "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (?, ?, ?, ?)",
             (clinic_api_key, client_email, json.dumps(result), timestamp)
         )
+        conn.commit()
+
+def update_clinic_quota(api_key: str, new_quota: int, new_subscription_start: str = None):
+    """Met à jour le quota d'analyses pour une clinique. Optionnellement, met à jour la date de souscription."""
+    with sqlite3.connect('clinics/config.db', check_same_thread=False) as conn:
+        if new_subscription_start:
+            conn.execute("UPDATE clinics SET analysis_quota = ?, subscription_start = ? WHERE api_key = ?", (new_quota, new_subscription_start, api_key))
+        else:
+            conn.execute("UPDATE clinics SET analysis_quota = ? WHERE api_key = ?", (new_quota, api_key))
         conn.commit()
 
 def send_email(to_email: str, subject: str, body: str):
@@ -106,6 +124,41 @@ async def analyze(
     if not consent:
         raise HTTPException(status_code=400, detail="Vous devez accepter que vos données soient utilisées pour vous recontacter.")
     try:
+        # Récupération de la configuration de la clinique
+        clinic_config = get_clinic_config(api_key)
+        if not clinic_config:
+            raise HTTPException(status_code=404, detail="Clinique non trouvée")
+        
+        # Gestion de la réinitialisation mensuelle
+        # Si subscription_start est défini, on vérifie si plus d'un mois s'est écoulé
+        subscription_start = clinic_config.get("subscription_start")
+        now = datetime.utcnow()
+        reset_quota = False
+        if subscription_start:
+            start_dt = datetime.fromisoformat(subscription_start)
+            # Si plus de 30 jours se sont écoulés, on réinitialise le quota
+            if now - start_dt >= timedelta(days=30):
+                reset_quota = True
+        else:
+            # Si la date n'est pas définie, on initialise la date de souscription
+            reset_quota = True
+
+        # Si besoin, réinitialiser le quota
+        if reset_quota:
+            default_quota = clinic_config.get("default_quota")
+            if default_quota is None:
+                raise HTTPException(status_code=400, detail="Le quota par défaut n'est pas défini pour cette clinique.")
+            # Réinitialise analysis_quota et met à jour subscription_start avec la date actuelle
+            update_clinic_quota(api_key, default_quota, now.isoformat())
+            clinic_config["analysis_quota"] = default_quota
+            clinic_config["subscription_start"] = now.isoformat()
+
+        quota = clinic_config.get("analysis_quota")
+        if quota is None:
+            raise HTTPException(status_code=400, detail="Quota non défini pour cette clinique")
+        if isinstance(quota, int) and quota <= 0:
+            raise HTTPException(status_code=403, detail="Quota d'analyses épuisé")
+
         # Traitement et redimensionnement des images
         images = [
             Image.open(BytesIO(await front.read())).resize((512, 512)),
@@ -114,6 +167,7 @@ async def analyze(
             Image.open(BytesIO(await back.read())).resize((512, 512))
         ]
 
+        # Création d'une grille 1024x1024
         grid = Image.new('RGB', (1024, 1024))
         grid.paste(images[0], (0, 0))
         grid.paste(images[1], (512, 0))
@@ -131,7 +185,7 @@ async def analyze(
 
         client = OpenAI(api_key=openai_api_key)
         response = client.chat.completions.create(
-            model="gpt-4",  # Utilise un modèle textuel valide
+            model="gpt-4",
             messages=[
                 {
                     "role": "user",
@@ -162,13 +216,16 @@ async def analyze(
         json_result = json.loads(json_str)
 
         # Ajustement du tarif en fonction du stade et de la configuration de la clinique
-        clinic_config = get_clinic_config(api_key)
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]  # Exemple: {"7": 4000, "6": 3500, "5": 3000}
             stade = json_result.get("stade", "").strip()
             if stade and stade in pricing:
                 json_result["price_range"] = f"{pricing[stade]}€"
         
+        # Décrémenter le quota
+        new_quota = quota - 1
+        update_clinic_quota(api_key, new_quota)
+
         save_analysis(api_key, client_email, json_result)
 
         if clinic_config and clinic_config.get("email_clinique"):
