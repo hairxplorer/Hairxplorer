@@ -218,7 +218,6 @@ async def analyze(
         save_analysis(api_key, client_email, json_result)
 
         if (clinic_config and clinic_config.get("email_clinique")):
-            $sujet = "New Analysis Result";  // Cette syntaxe est invalide en Python – corrigeons :
             sujet = "New Analysis Result"
             corps = "Here is the analysis result for a client ({}):\n\n{}".format(client_email, json.dumps(json_result, indent=2))
             send_email(clinic_config["email_clinique"], sujet, corps)
