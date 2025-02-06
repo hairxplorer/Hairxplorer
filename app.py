@@ -25,7 +25,6 @@ app.add_middleware(
     expose_headers=["Content-Type", "Content-Length"]
 )
 
-# Monter le dossier static (pour le widget web)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 def init_db():
