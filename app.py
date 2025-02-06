@@ -217,15 +217,14 @@ async def analyze(
 
         save_analysis(api_key, client_email, json_result)
 
-        if (clinic_config and clinic_config.get("email_clinique")):
-            $sujet = "New Analysis Result";
-            $corps = "Here is the analysis result for a client (" . $client_email . "):\n\n" . json.dumps(json_result, indent=2);
-            send_email(clinic_config["email_clinique"], "New Analysis Result", $corps);
-        }
-
-        $sujet_client = "Your Analysis Result";
-        $corps_client = "Hello,\n\nHere is your analysis result:\n\n" . json.dumps(json_result, indent=2) . "\n\nThank you for your trust.";
-        send_email(client_email, "Your Analysis Result", $corps_client);
+        if clinic_config and clinic_config.get("email_clinique"):
+            sujet = "New Analysis Result"
+            corps = "Here is the analysis result for a client ({}):\n\n{}".format(client_email, json.dumps(json_result, indent=2))
+            send_email(clinic_config["email_clinique"], sujet, corps)
+        
+        sujet_client = "Your Analysis Result"
+        corps_client = "Hello,\n\nHere is your analysis result:\n\n{}\n\nThank you for your trust.".format(json.dumps(json_result, indent=2))
+        send_email(client_email, sujet_client, corps_client)
 
         return json_result
 
