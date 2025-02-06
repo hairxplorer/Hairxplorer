@@ -30,7 +30,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 def init_db():
     os.makedirs('clinics', exist_ok=True)
-    # Création de la table clinics avec les colonnes supplémentaires pour la gestion mensuelle du quota
+    # Table clinics : avec configuration, quota mensuel et date de souscription
     with sqlite3.connect('clinics/config.db') as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS clinics (
@@ -96,10 +96,10 @@ def update_clinic_quota(api_key: str, new_quota: int, new_subscription_start: st
 
 def send_email(to_email: str, subject: str, body: str):
     """Envoie un e-mail via SMTP (à adapter selon ton fournisseur)."""
-    SMTP_SERVER = "smtp.example.com"   # Remplace par ton serveur SMTP
-    SMTP_PORT = 587                    # Remplace par ton port SMTP
-    SMTP_USER = "ton_email@example.com"  # Remplace par ton e-mail
-    SMTP_PASSWORD = "ton_mot_de_passe"     # Remplace par ton mot de passe
+    SMTP_SERVER = "smtp.example.com"   # Remplace par votre serveur SMTP
+    SMTP_PORT = 587                    # Remplace par votre port SMTP
+    SMTP_USER = "ton_email@example.com"  # Remplace par votre email
+    SMTP_PASSWORD = "ton_mot_de_passe"     # Remplace par votre mot de passe
 
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
@@ -122,58 +122,50 @@ async def analyze(
     consent: bool = Form(...)
 ):
     if not consent:
-        raise HTTPException(status_code=400, detail="Vous devez accepter que vos données soient utilisées pour vous recontacter.")
+        raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
     try:
         # Récupération de la configuration de la clinique
         clinic_config = get_clinic_config(api_key)
         if not clinic_config:
-            raise HTTPException(status_code=404, detail="Clinique non trouvée")
+            raise HTTPException(status_code=404, detail="Clinic not found")
         
         # Gestion de la réinitialisation mensuelle
-        # Si subscription_start est défini, on vérifie si plus d'un mois s'est écoulé
         subscription_start = clinic_config.get("subscription_start")
         now = datetime.utcnow()
         reset_quota = False
         if subscription_start:
             start_dt = datetime.fromisoformat(subscription_start)
-            # Si plus de 30 jours se sont écoulés, on réinitialise le quota
             if now - start_dt >= timedelta(days=30):
                 reset_quota = True
         else:
-            # Si la date n'est pas définie, on initialise la date de souscription
             reset_quota = True
 
-        # Si besoin, réinitialiser le quota
         if reset_quota:
             default_quota = clinic_config.get("default_quota")
             if default_quota is None:
-                raise HTTPException(status_code=400, detail="Le quota par défaut n'est pas défini pour cette clinique.")
-            # Réinitialise analysis_quota et met à jour subscription_start avec la date actuelle
+                raise HTTPException(status_code=400, detail="Default quota is not defined for this clinic.")
             update_clinic_quota(api_key, default_quota, now.isoformat())
             clinic_config["analysis_quota"] = default_quota
             clinic_config["subscription_start"] = now.isoformat()
 
         quota = clinic_config.get("analysis_quota")
         if quota is None:
-            raise HTTPException(status_code=400, detail="Quota non défini pour cette clinique")
+            raise HTTPException(status_code=400, detail="Quota is not defined for this clinic")
         if isinstance(quota, int) and quota <= 0:
-            raise HTTPException(status_code=403, detail="Quota d'analyses épuisé")
+            raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-        # Traitement et redimensionnement des images
+        # Traitement des images
         images = [
             Image.open(BytesIO(await front.read())).resize((512, 512)),
             Image.open(BytesIO(await top.read())).resize((512, 512)),
             Image.open(BytesIO(await side.read())).resize((512, 512)),
             Image.open(BytesIO(await back.read())).resize((512, 512))
         ]
-
-        # Création d'une grille 1024x1024
         grid = Image.new('RGB', (1024, 1024))
         grid.paste(images[0], (0, 0))
         grid.paste(images[1], (512, 0))
         grid.paste(images[2], (0, 512))
         grid.paste(images[3], (512, 512))
-
         buffered = BytesIO()
         grid.save(buffered, format="JPEG", quality=100)
         b64_image = base64.b64encode(buffered.getvalue()).decode()
@@ -181,7 +173,7 @@ async def analyze(
         openai_api_key = os.getenv("OPENAI_API_KEY")
         print("DEBUG: OpenAI API Key =", openai_api_key)
         if not openai_api_key:
-            raise HTTPException(status_code=500, detail="Clé OpenAI introuvable dans les variables d'environnement.")
+            raise HTTPException(status_code=500, detail="OpenAI API key not found in environment variables.")
 
         client = OpenAI(api_key=openai_api_key)
         response = client.chat.completions.create(
@@ -191,50 +183,47 @@ async def analyze(
                     "role": "user",
                     "content": [
                         {"type": "text", "text": (
-                            "Donne-moi uniquement une réponse en JSON strict, sans aucun commentaire additionnel. "
-                            "La réponse doit être exactement de la forme suivante, sans mentionner de traitement ou greffe :\n"
-                            "{\"stade\": \"<numéro correspondant au stade sur l'échelle Norwood-Hamilton>\", "
-                            "\"price_range\": \"<fourchette tarifaire spécifique à ma clinique>\", "
-                            "\"details\": \"<description détaillée de l'analyse>\", "
-                            "\"evaluation\": \"<évaluation précise sur l'échelle Norwood-Hamilton>\"}"
+                            "Provide a strictly JSON response without any extra commentary. "
+                            "The response must be exactly in this format, without mentioning treatment or surgery:\n"
+                            "{\"stade\": \"<Norwood stage number>\", "
+                            "\"price_range\": \"<pricing based on configuration>\", "
+                            "\"details\": \"<detailed analysis description>\", "
+                            "\"evaluation\": \"<precise evaluation on the Norwood scale>\"}"
                         )}
                     ]
                 }
             ],
             max_tokens=300
         )
-
         raw_response = response.choices[0].message.content
-        print("DEBUG: Réponse OpenAI =", raw_response)
-
+        print("DEBUG: OpenAI Response =", raw_response)
         match = re.search(r'\{.*\}', raw_response, re.DOTALL)
         if not match:
-            raise Exception("Aucun JSON trouvé dans la réponse.")
+            raise Exception("No JSON found in the response.")
         json_str = match.group(0)
-        print("DEBUG: JSON extrait =", json_str)
-
+        print("DEBUG: Extracted JSON =", json_str)
         json_result = json.loads(json_str)
 
-        # Ajustement du tarif en fonction du stade et de la configuration de la clinique
+        # Ajustement tarifaire selon le stade
         if clinic_config and "pricing" in clinic_config:
-            pricing = clinic_config["pricing"]  # Exemple: {"7": 4000, "6": 3500, "5": 3000}
+            pricing = clinic_config["pricing"]  # e.g. {"7":4000, "6":3500, "5":3000}
             stade = json_result.get("stade", "").strip()
             if stade and stade in pricing:
                 json_result["price_range"] = f"{pricing[stade]}€"
         
-        # Décrémenter le quota
+        # Décrémentation du quota
         new_quota = quota - 1
         update_clinic_quota(api_key, new_quota)
 
         save_analysis(api_key, client_email, json_result)
 
         if clinic_config and clinic_config.get("email_clinique"):
-            sujet = "Nouvelle analyse de calvitie"
-            corps = f"Voici le résultat de l'analyse effectuée pour un client ({client_email}) :\n\n{json.dumps(json_result, indent=2)}"
+            sujet = "New Analysis Result"
+            corps = f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
             send_email(clinic_config["email_clinique"], sujet, corps)
         
-        sujet_client = "Votre analyse de calvitie"
-        corps_client = f"Bonjour,\n\nVoici le résultat de votre analyse :\n\n{json.dumps(json_result, indent=2)}\n\nNous vous remercions de votre confiance."
+        sujet_client = "Your Analysis Result"
+        corps_client = f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
         send_email(client_email, sujet_client, corps_client)
 
         return json_result
@@ -247,7 +236,24 @@ async def analyze(
 def health_check():
     return {"status": "online"}
 
-# Inclusion du routeur d'administration
+@app.post("/update-config")
+async def update_config(api_key: str = Form(...), config: str = Form(...)):
+    try:
+        config_data = json.loads(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON configuration: " + str(e))
+    try:
+        with sqlite3.connect('clinics/config.db', check_same_thread=False) as conn:
+            cursor = conn.cursor()
+            # On met à jour l'email_clinique et le pricing dans la table clinics
+            cursor.execute("UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
+                           (config_data.get("email"), json.dumps(config_data.get("pricing", {})), api_key))
+            conn.commit()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error updating configuration: " + str(e))
+
+# Endpoint d'administration via /admin sera inclus par le routeur
 from admin import router as admin_router
 app.include_router(admin_router, prefix="/admin")
 
