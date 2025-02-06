@@ -95,7 +95,7 @@ def update_clinic_quota(api_key: str, new_quota: int, new_subscription_start: st
         conn.commit()
 
 def send_email(to_email: str, subject: str, body: str):
-    """Envoie un e-mail via SMTP (à adapter selon ton fournisseur)."""
+    """Envoie un e-mail via SMTP (à adapter selon votre fournisseur)."""
     SMTP_SERVER = "smtp.example.com"   # Remplace par votre serveur SMTP
     SMTP_PORT = 587                    # Remplace par votre port SMTP
     SMTP_USER = "ton_email@example.com"  # Remplace par votre email
@@ -184,7 +184,7 @@ async def analyze(
                     "content": [
                         {"type": "text", "text": (
                             "Provide a strictly JSON response without any extra commentary. "
-                            "The response must be exactly in this format, without mentioning treatment or surgery:\n"
+                            "The response must be exactly in the following format, without mentioning treatment or surgery:\n"
                             "{\"stade\": \"<Norwood stage number>\", "
                             "\"price_range\": \"<pricing based on configuration>\", "
                             "\"details\": \"<detailed analysis description>\", "
@@ -204,7 +204,7 @@ async def analyze(
         print("DEBUG: Extracted JSON =", json_str)
         json_result = json.loads(json_str)
 
-        # Ajustement tarifaire selon le stade
+        # Ajustement du tarif selon le stade
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]  # e.g. {"7":4000, "6":3500, "5":3000}
             stade = json_result.get("stade", "").strip()
@@ -217,14 +217,15 @@ async def analyze(
 
         save_analysis(api_key, client_email, json_result)
 
-        if clinic_config and clinic_config.get("email_clinique"):
-            sujet = "New Analysis Result"
-            corps = f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
-            send_email(clinic_config["email_clinique"], sujet, corps)
-        
-        sujet_client = "Your Analysis Result"
-        corps_client = f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
-        send_email(client_email, sujet_client, corps_client)
+        if (clinic_config and clinic_config.get("email_clinique")):
+            $sujet = "New Analysis Result";
+            $corps = "Here is the analysis result for a client (" . $client_email . "):\n\n" . json.dumps(json_result, indent=2);
+            send_email(clinic_config["email_clinique"], "New Analysis Result", $corps);
+        }
+
+        $sujet_client = "Your Analysis Result";
+        $corps_client = "Hello,\n\nHere is your analysis result:\n\n" . json.dumps(json_result, indent=2) . "\n\nThank you for your trust.";
+        send_email(client_email, "Your Analysis Result", $corps_client);
 
         return json_result
 
@@ -245,7 +246,6 @@ async def update_config(api_key: str = Form(...), config: str = Form(...)):
     try:
         with sqlite3.connect('clinics/config.db', check_same_thread=False) as conn:
             cursor = conn.cursor()
-            # On met à jour l'email_clinique et le pricing dans la table clinics
             cursor.execute("UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
                            (config_data.get("email"), json.dumps(config_data.get("pricing", {})), api_key))
             conn.commit()
@@ -253,7 +253,7 @@ async def update_config(api_key: str = Form(...), config: str = Form(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error updating configuration: " + str(e))
 
-# Endpoint d'administration via /admin sera inclus par le routeur
+# Inclusion du routeur d'administration
 from admin import router as admin_router
 app.include_router(admin_router, prefix="/admin")
 
