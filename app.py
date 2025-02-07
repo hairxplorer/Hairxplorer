@@ -10,19 +10,17 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from openai import AsyncOpenAI  # Utilisez la version asynchrone
+from openai import AsyncOpenAI
 from PIL import Image
 from io import BytesIO
-from pydantic import BaseModel, EmailStr, validator, Field  # Importez Pydantic
+from pydantic import BaseModel, EmailStr, validator, Field
 from typing import Optional, Dict
-from dotenv import load_dotenv  # Pour charger les variables d'environnement
+from dotenv import load_dotenv
 
-# Charger les variables d'environnement depuis un fichier .env (s'il existe)
 load_dotenv()
 
 app = FastAPI()
 
-# Configuration CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,48 +30,49 @@ app.add_middleware(
     expose_headers=["Content-Type", "Content-Length"]
 )
 
-# Monter le dossier static (pour le widget web)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- Modèles Pydantic ---
 class SMTPConfig(BaseModel):
-    server: str = Field(..., env="SMTP_SERVER")  # Lit depuis la variable d'environnement
+    server: str = Field(..., env="SMTP_SERVER")
     port: int = Field(..., env="SMTP_PORT")
     user: EmailStr = Field(..., env="SMTP_USER")
     password: str = Field(..., env="SMTP_PASSWORD")
 
-class ClinicConfig(BaseModel):
-    email: Optional[EmailStr] = None  # Email de la clinique
-    smtp: Optional[SMTPConfig] = None # config smtp
+class ClinicConfig(BaseModel):  #Inutile pour /update-config
+    email: Optional[EmailStr] = None
+    smtp: Optional[SMTPConfig] = None
     pricing: Dict[str, int] = {}
-    button_color: str = "#0000ff"  # Valeur par défaut
+    button_color: str = "#0000ff"
 
-class AnalysisRequest(BaseModel):
+class AnalysisRequest(BaseModel): #Inutile pour /update-config
     api_key: str
     client_email: EmailStr
     consent: bool
 
-class AnalysisResult(BaseModel):  # Modèle pour la réponse *attendue* de l'API
+class AnalysisResult(BaseModel):  #Inutile pour /update-config
     stade: str
-    price_range: Optional[str] = None # on met optional car on va le geerer nous même
+    price_range: Optional[str] = None
     details: str
     evaluation: str
 
-class ClinicConfigUpdate(BaseModel): # Model pour update-config
+class ClinicConfigUpdate(BaseModel):  # Utiliser pour /update-config
     api_key: str
     email: Optional[EmailStr] = None
-    smtp: Optional[SMTPConfig] = None # config smtp
+    smtp: Optional[SMTPConfig] = None
     pricing: Dict[str, int] = {}
     button_color: str = "#0000ff"
 
 # --- Fonctions utilitaires ---
 
+DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db') # Chemin absolu
+
 def get_db_connection():
     """Crée une nouvelle connexion à la base de données en mémoire."""
     db = sqlite3.connect(':memory:')
     # Charger la base de données depuis le fichier
-    if os.path.exists('clinics/config.db'):
-        with sqlite3.connect('clinics/config.db') as disk_conn:
+    if os.path.exists(DATABASE_PATH):
+        with sqlite3.connect(DATABASE_PATH) as disk_conn:
             disk_conn.backup(db)  # Copie le contenu du fichier dans la DB en mémoire
     return db
 
@@ -103,8 +102,12 @@ def init_db(db: sqlite3.Connection):
     ''')
     db.commit()
 
-
-def get_clinic_config(db: sqlite3.Connection, api_key: str):
+def save_db(db: sqlite3.Connection):
+    """Sauvegarde la base de données en mémoire sur disque."""
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire!
+    with sqlite3.connect(DATABASE_PATH) as disk_conn:
+        db.backup(disk_conn)
+        def get_clinic_config(db: sqlite3.Connection, api_key: str):
     """Récupère la configuration d'une clinique."""
     cursor = db.cursor()
     cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
@@ -121,15 +124,6 @@ def get_clinic_config(db: sqlite3.Connection, api_key: str):
         }
     return None
 
-def save_analysis(db: sqlite3.Connection, clinic_api_key: str, client_email: str, result: dict):
-    """Enregistre une analyse."""
-    timestamp = datetime.utcnow().isoformat()
-    db.execute(
-        "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (?, ?, ?, ?)",
-        (clinic_api_key, client_email, json.dumps(result), timestamp)
-    )
-    db.commit()
-
 def update_clinic_quota(db: sqlite3.Connection, api_key: str, new_quota: int, new_subscription_start: str = None):
     """Met à jour le quota et/ou la date de souscription."""
     if new_subscription_start:
@@ -141,7 +135,7 @@ def update_clinic_quota(db: sqlite3.Connection, api_key: str, new_quota: int, ne
 def _send_email(to_email: str, subject: str, body: str):
     """Fonction interne pour envoyer un e-mail (ne pas exposer directement)."""
     try:
-      smtp_config = SMTPConfig() # on recupere les information pour ce connecter au smtp
+      smtp_config = SMTPConfig()
       msg = MIMEText(body, "plain", "utf-8")
       msg["Subject"] = subject
       msg["From"] = smtp_config.user
@@ -179,10 +173,11 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
 
-def save_db(db: sqlite3.Connection):
-    """Sauvegarde la base de données en mémoire sur disque."""
-    with sqlite3.connect('clinics/config.db') as disk_conn:
-        db.backup(disk_conn)
+# Initialisation de la base de données au démarrage de l'application
+db = get_db_connection()
+init_db(db)
+save_db(db)  # Important: Sauvegardez *immédiatement* après la création
+db.close()
 
 # --- Routes FastAPI ---
 @app.post("/analyze")
@@ -192,7 +187,7 @@ async def analyze(
     top: UploadFile = File(...),
     side: UploadFile = File(...),
     back: UploadFile = File(...),
-    request_data: AnalysisRequest = Depends()  # Utilisez Depends pour le modèle Pydantic
+    request_data: AnalysisRequest = Depends()
     , db: sqlite3.Connection = Depends(get_db_connection)
 ):
     if not request_data.consent:
@@ -210,7 +205,6 @@ async def analyze(
     if isinstance(quota, int) and quota <= 0:
         raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-    # Traitement des images (réduction de la qualité)
     images = [
         Image.open(BytesIO(await file.read())).resize((512, 512))
         for file in [front, top, side, back]
@@ -224,7 +218,6 @@ async def analyze(
     grid.save(buffered, format="JPEG", quality=75)  # Qualité réduite
     b64_image = base64.b64encode(buffered.getvalue()).decode()
 
-    # Appel asynchrone à OpenAI
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     try:
         response = await client.chat.completions.create(
@@ -252,37 +245,30 @@ async def analyze(
             max_tokens=300
         )
         raw_response = response.choices[0].message.content
-        print("DEBUG: OpenAI Response =", raw_response) # pour le debug
+        print("DEBUG: OpenAI Response =", raw_response)
         match = re.search(r'\{.*\}', raw_response, re.DOTALL)
         if not match:
             raise HTTPException(status_code=500, detail="Invalid response from OpenAI: No JSON found.")
         json_str = match.group(0)
         print("DEBUG: Extracted JSON =", json_str)
 
-         # Parsing et validation de la réponse avec Pydantic
         try:
-            json_result = AnalysisResult.parse_raw(json_str)  # Utilisation de parse_raw
-            json_result = json_result.dict() # on le converti en dict
+            json_result = AnalysisResult.parse_raw(json_str)
+            json_result = json_result.dict()
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Invalid response from OpenAI: {e}")
 
-        # Ajustement du tarif
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
             stade = json_result.get("stade", "").strip()
             if stade and stade in pricing:
                 json_result["price_range"] = f"{pricing[stade]}€"
 
-        # Décrémentation du quota (après l'appel réussi à OpenAI)
         new_quota = quota - 1
         update_clinic_quota(db, request_data.api_key, new_quota)
-
-        # Enregistrement de l'analyse
         save_analysis(db, request_data.api_key, request_data.client_email, json_result)
 
-
-        # Envoi d'e-mails (en arrière-plan)
-        if clinic_config and clinic_config.get("email_clinique"):
+        if (clinic_config and clinic_config.get("email_clinique")):
             background_tasks.add_task(
                 send_email_task,
                 clinic_config["email_clinique"],
@@ -296,48 +282,50 @@ async def analyze(
             "Your Analysis Result",
             f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
         )
-        save_db(db) # on sauvegarde
+        save_db(db)
         return json_result
 
     except Exception as e:
-        print("DEBUG: Exception =", e)  # Log pour le débogage
+        print("DEBUG: Exception =", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/")
+        @app.get("/")
 def health_check():
     return {"status": "online"}
 
-
-# --- Endpoint pour mettre à jour *ou créer* une configuration de clinique ---
 @app.post("/update-config")
 async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3.Connection = Depends(get_db_connection)):
+    print("DEBUG: /update-config called")
+    try:
+        print("DEBUG: config_data:", config_data.dict()) #Très important pour le debug
+    except Exception as e:
+        print(f"DEBUG: Erreur Pydantic: {e}") #Si il y a une erreur avec le parsing Pydantic
+
 
     existing_config = get_clinic_config(db, config_data.api_key)
+    print("DEBUG: existing_config:", existing_config)
 
     try:
         if existing_config:
-            # Mise à jour de la configuration existante
+            print("DEBUG: Updating existing config")
             db.execute(
                 "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
                 (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
             )
         else:
-            # Création d'une nouvelle configuration
+            print("DEBUG: Creating new config")
             db.execute(
                 "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
-                (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)  # Valeurs par défaut
+                (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
             )
         db.commit()
-        save_db(db) # on sauvegarde
+        save_db(db)  # Sauvegarde *après* chaque modification
         return {"status": "success"}
 
     except Exception as e:
+        print("DEBUG: Exception in update_config:", e) #Très important, capture toutes les exceptions
         raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
 
-
-# Inclusion du routeur d'administration (assurez-vous qu'il est compatible)
-from admin import router as admin_router  # type: ignore # si admin est optionnel
+from admin import router as admin_router  # type: ignore
 app.include_router(admin_router, prefix="/admin")
 
 if __name__ == "__main__":
