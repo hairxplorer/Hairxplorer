@@ -107,7 +107,8 @@ def save_db(db: sqlite3.Connection):
     os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire!
     with sqlite3.connect(DATABASE_PATH) as disk_conn:
         db.backup(disk_conn)
-        def get_clinic_config(db: sqlite3.Connection, api_key: str):
+
+def get_clinic_config(db: sqlite3.Connection, api_key: str):
     """Récupère la configuration d'une clinique."""
     cursor = db.cursor()
     cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
@@ -245,7 +246,7 @@ async def analyze(
             max_tokens=300
         )
         raw_response = response.choices[0].message.content
-        print("DEBUG: OpenAI Response =", raw_response)
+        print("DEBUG: OpenAI Response =", raw_response) # pour le debug
         match = re.search(r'\{.*\}', raw_response, re.DOTALL)
         if not match:
             raise HTTPException(status_code=500, detail="Invalid response from OpenAI: No JSON found.")
@@ -288,7 +289,8 @@ async def analyze(
     except Exception as e:
         print("DEBUG: Exception =", e)
         raise HTTPException(status_code=500, detail=str(e))
-        @app.get("/")
+
+@app.get("/")
 def health_check():
     return {"status": "online"}
 
@@ -299,7 +301,6 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
         print("DEBUG: config_data:", config_data.dict()) #Très important pour le debug
     except Exception as e:
         print(f"DEBUG: Erreur Pydantic: {e}") #Si il y a une erreur avec le parsing Pydantic
-
 
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
