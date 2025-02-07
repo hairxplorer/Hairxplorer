@@ -302,29 +302,32 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
 
-try:
         if existing_config:
-            print("DEBUG: Updating existing config")
-            with db: # with pour transaction
-                db.execute(
-                    "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
-                    (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
-                )
-        else:
-            print("DEBUG: Creating new config")
-            with db: # with pour transaction
-                db.execute(
-                    "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
-                    (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
-                )
-        return {"status": "success"}
+ try:
+    if existing_config:
+        print("DEBUG: Updating existing config")
+        with db:  # with pour transaction
+            db.execute(
+                "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
+                (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
+            )
+    else:
+        print("DEBUG: Creating new config")
+        with db:  # with pour transaction
+            db.execute(
+                "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
+                (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
+            )
+    
+    save_db(db)  # Moved outside the conditional blocks
+    return {"status": "success"}
 
-    except Exception as e:
-        print("DEBUG: Exception in update_config:", e) #Très important, capture toutes les exceptions
-        raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
+except Exception as e:
+    print("DEBUG: Exception in update_config:", e)
+    raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
 
-    finally:  # AJOUT IMPORTANT: Ferme la connexion dans tous les cas
-        db.close()
+finally:  # AJOUT IMPORTANT: Ferme la connexion dans tous les cas
+    db.close()
 
 from admin import router as admin_router  # type: ignore
 app.include_router(admin_router, prefix="/admin")
