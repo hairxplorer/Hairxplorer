@@ -22,7 +22,7 @@ load_dotenv()
 
 app = FastAPI()
 
-# Configuration CORS (laissez-la telle quelle)
+# Configuration CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -153,7 +153,7 @@ def _send_email(to_email: str, subject: str, body: str):
     except Exception as e:
         print(f"Error sending email: {e}")
         # Gérer l'erreur (journaliser, réessayer, etc.)
-    
+
 def send_email_task(to_email: str, subject: str, body: str):
     """Tâche en arrière-plan pour envoyer un e-mail."""
     _send_email(to_email, subject, body)
