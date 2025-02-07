@@ -302,6 +302,7 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
         print(f"DEBUG: Erreur Pydantic: {e}")
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
+
     try:
         if existing_config:
             print("DEBUG: Updating existing config")
