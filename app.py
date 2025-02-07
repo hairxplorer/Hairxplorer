@@ -68,45 +68,42 @@ class ClinicConfigUpdate(BaseModel):  # Utiliser pour /update-config
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db') # Chemin absolu
 
 def get_db_connection():
-    """Crée une nouvelle connexion à la base de données en mémoire."""
-    db = sqlite3.connect(':memory:')
-    # Charger la base de données depuis le fichier
-    if os.path.exists(DATABASE_PATH):
-        with sqlite3.connect(DATABASE_PATH) as disk_conn:
-            disk_conn.backup(db)  # Copie le contenu du fichier dans la DB en mémoire
+    """Crée une nouvelle connexion à la base de données *fichier*, thread-safe."""
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire si nécessaire
+    db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)  # IMPORTANT: check_same_thread=False
+    db.execute("PRAGMA journal_mode=WAL")  # Amélioration pour la concurrence
     return db
 
 def init_db(db: sqlite3.Connection):
-    """Initialise la base de données (en mémoire)."""
-    # Table clinics
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS clinics (
-            api_key TEXT PRIMARY KEY,
-            email_clinique TEXT,
-            pricing TEXT,
-            analysis_quota INTEGER,
-            default_quota INTEGER,
-            subscription_start TEXT
-        )
-    ''')
-    # Table analyses
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS analyses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            clinic_api_key TEXT,
-            client_email TEXT,
-            result TEXT,
-            timestamp TEXT,
-            FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
-        )
-    ''')
-    db.commit()
+     with db: # with pour transaction
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS clinics (
+                api_key TEXT PRIMARY KEY,
+                email_clinique TEXT,
+                pricing TEXT,
+                analysis_quota INTEGER DEFAULT 0,
+                default_quota INTEGER DEFAULT 0,
+                subscription_start TEXT
+            )
+        ''')
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                clinic_api_key TEXT,
+                client_email TEXT,
+                result TEXT,
+                timestamp TEXT,
+                FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
+            )
+        ''')
 
-def save_db(db: sqlite3.Connection):
-    """Sauvegarde la base de données en mémoire sur disque."""
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire!
-    with sqlite3.connect(DATABASE_PATH) as disk_conn:
-        db.backup(disk_conn)
+async def get_db(): #Fonction pour FastAPI
+    db = get_db_connection()
+    try:
+        yield db
+    finally:
+        db.close()
+
 
 def get_clinic_config(db: sqlite3.Connection, api_key: str):
     """Récupère la configuration d'une clinique."""
@@ -127,11 +124,12 @@ def get_clinic_config(db: sqlite3.Connection, api_key: str):
 
 def update_clinic_quota(db: sqlite3.Connection, api_key: str, new_quota: int, new_subscription_start: str = None):
     """Met à jour le quota et/ou la date de souscription."""
-    if new_subscription_start:
-        db.execute("UPDATE clinics SET analysis_quota = ?, subscription_start = ? WHERE api_key = ?", (new_quota, new_subscription_start, api_key))
-    else:
-        db.execute("UPDATE clinics SET analysis_quota = ? WHERE api_key = ?", (new_quota, api_key))
-    db.commit()
+    with db: # with pour transaction
+        if new_subscription_start:
+            db.execute("UPDATE clinics SET analysis_quota = ?, subscription_start = ? WHERE api_key = ?", (new_quota, new_subscription_start, api_key))
+        else:
+            db.execute("UPDATE clinics SET analysis_quota = ? WHERE api_key = ?", (new_quota, api_key))
+
 
 def _send_email(to_email: str, subject: str, body: str):
     """Fonction interne pour envoyer un e-mail (ne pas exposer directement)."""
@@ -170,9 +168,11 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
         default_quota = clinic_config.get("default_quota")
         if default_quota is None:
             raise HTTPException(status_code=400, detail="Default quota is not defined for this clinic.")
-        update_clinic_quota(db, api_key, default_quota, now.isoformat())
+        with db: # with pour transaction
+            update_clinic_quota(db, api_key, default_quota, now.isoformat())
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
+
 
 # --- Routes FastAPI ---
 @app.post("/analyze")
@@ -183,9 +183,9 @@ async def analyze(
     side: UploadFile = File(...),
     back: UploadFile = File(...),
     request_data: AnalysisRequest = Depends()
-    , db: sqlite3.Connection = Depends(get_db_connection)
+    , db: sqlite3.Connection = Depends(get_db) #Utilisation de get_db
 ):
-    try: #Ajout d'un try finally pour la fermeture de la connection
+    try:
         if not request_data.consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
 
@@ -262,7 +262,8 @@ async def analyze(
 
             new_quota = quota - 1
             update_clinic_quota(db, request_data.api_key, new_quota)
-            save_analysis(db, request_data.api_key, request_data.client_email, json_result)
+            with db: # with pour transaction
+                save_analysis(db, request_data.api_key, request_data.client_email, json_result)
 
             if (clinic_config and clinic_config.get("email_clinique")):
                 background_tasks.add_task(
@@ -278,14 +279,13 @@ async def analyze(
                 "Your Analysis Result",
                 f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
             )
-            save_db(db)
             return json_result
 
         except Exception as e:
             print("DEBUG: Exception =", e)
             raise HTTPException(status_code=500, detail=str(e))
 
-    finally: # Ajout du finally
+    finally:  # Ferme la connexion dans tous les cas
         db.close()
 
 @app.get("/")
@@ -293,39 +293,39 @@ def health_check():
     return {"status": "online"}
 
 @app.post("/update-config")
-async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3.Connection = Depends(get_db_connection)):
+async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3.Connection = Depends(get_db)): #Utilisation de get_db
     print("DEBUG: /update-config called")
     try:
-        print("DEBUG: config_data:", config_data.dict()) #Très important pour le debug
+        print("DEBUG: config_data:", config_data.dict())
     except Exception as e:
         print(f"DEBUG: Erreur Pydantic: {e}")
-
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
 
     try:
         if existing_config:
             print("DEBUG: Updating existing config")
-            db.execute(
-                "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
-                (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
-            )
+            with db: # with pour transaction
+                db.execute(
+                    "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
+                    (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
+                )
         else:
             print("DEBUG: Creating new config")
-            db.execute(
-                "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
-                (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
-            )
-        db.commit()
-        save_db(db)  # Sauvegarde *après* chaque modification
+             with db: # with pour transaction
+                db.execute(
+                    "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
+                    (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
+                )
         return {"status": "success"}
 
     except Exception as e:
-        print("DEBUG: Exception in update_config:", e) #Très important, capture toutes les exceptions
+        print("DEBUG: Exception in update_config:", e)
         raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
-
-    finally:  # AJOUT IMPORTANT: Ferme la connexion dans tous les cas
+    finally:
         db.close()
+
+
 
 from admin import router as admin_router  # type: ignore
 app.include_router(admin_router, prefix="/admin")
