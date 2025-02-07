@@ -5,4 +5,4 @@ python-multipart
 pillow
 python-dotenv
 jinja2
-pydantic
+pydantic[email]
