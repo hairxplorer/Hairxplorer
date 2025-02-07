@@ -7,7 +7,7 @@ import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI  # Utilisez la version asynchrone
@@ -59,6 +59,12 @@ class AnalysisResult(BaseModel):  # Modèle pour la réponse *attendue* de l'API
     details: str
     evaluation: str
 
+class ClinicConfigUpdate(BaseModel): # Model pour update-config
+    api_key: str
+    email: Optional[EmailStr] = None
+    smtp: Optional[SMTPConfig] = None # config smtp
+    pricing: Dict[str, int] = {}
+    button_color: str = "#0000ff"
 
 # --- Fonctions utilitaires ---
 
@@ -305,22 +311,22 @@ def health_check():
 
 # --- Endpoint pour mettre à jour *ou créer* une configuration de clinique ---
 @app.post("/update-config")
-async def update_config(config_data: ClinicConfig = Depends() ,api_key: str = Form(...), db: sqlite3.Connection = Depends(get_db_connection)):
+async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3.Connection = Depends(get_db_connection)):
 
-    existing_config = get_clinic_config(db, api_key)
+    existing_config = get_clinic_config(db, config_data.api_key)
 
     try:
         if existing_config:
             # Mise à jour de la configuration existante
             db.execute(
                 "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
-                (config_data.email, json.dumps(config_data.pricing), api_key)
+                (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
             )
         else:
             # Création d'une nouvelle configuration
             db.execute(
                 "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
-                (api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)  # Valeurs par défaut
+                (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)  # Valeurs par défaut
             )
         db.commit()
         save_db(db) # on sauvegarde
@@ -331,7 +337,7 @@ async def update_config(config_data: ClinicConfig = Depends() ,api_key: str = Fo
 
 
 # Inclusion du routeur d'administration (assurez-vous qu'il est compatible)
-from admin import router as admin_router
+from admin import router as admin_router  # type: ignore # si admin est optionnel
 app.include_router(admin_router, prefix="/admin")
 
 if __name__ == "__main__":
