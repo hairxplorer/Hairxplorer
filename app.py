@@ -302,7 +302,7 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
 
-    try:
+try:
         if existing_config:
             print("DEBUG: Updating existing config")
             with db: # with pour transaction
@@ -312,7 +312,7 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
                 )
         else:
             print("DEBUG: Creating new config")
-             with db: # with pour transaction
+            with db: # with pour transaction
                 db.execute(
                     "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
                     (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
@@ -320,12 +320,11 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
         return {"status": "success"}
 
     except Exception as e:
-        print("DEBUG: Exception in update_config:", e)
+        print("DEBUG: Exception in update_config:", e) #Très important, capture toutes les exceptions
         raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
-    finally:
+
+    finally:  # AJOUT IMPORTANT: Ferme la connexion dans tous les cas
         db.close()
-
-
 
 from admin import router as admin_router  # type: ignore
 app.include_router(admin_router, prefix="/admin")
