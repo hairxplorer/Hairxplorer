@@ -69,13 +69,14 @@ DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db') 
 
 def get_db_connection():
     """Crée une nouvelle connexion à la base de données *fichier*, thread-safe."""
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire si nécessaire
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire!
     db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)  # IMPORTANT: check_same_thread=False
     db.execute("PRAGMA journal_mode=WAL")  # Amélioration pour la concurrence
     return db
 
 def init_db(db: sqlite3.Connection):
-     with db: # with pour transaction
+    """Initialise la base de données (en mémoire)."""
+    with db: # with pour transaction
         db.execute('''
             CREATE TABLE IF NOT EXISTS clinics (
                 api_key TEXT PRIMARY KEY,
@@ -168,7 +169,7 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
         default_quota = clinic_config.get("default_quota")
         if default_quota is None:
             raise HTTPException(status_code=400, detail="Default quota is not defined for this clinic.")
-        with db: # with pour transaction
+        with db:
             update_clinic_quota(db, api_key, default_quota, now.isoformat())
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
@@ -183,7 +184,7 @@ async def analyze(
     side: UploadFile = File(...),
     back: UploadFile = File(...),
     request_data: AnalysisRequest = Depends()
-    , db: sqlite3.Connection = Depends(get_db) #Utilisation de get_db
+    , db: sqlite3.Connection = Depends(get_db)  #Utilisation de get_db
 ):
     try:
         if not request_data.consent:
@@ -262,7 +263,7 @@ async def analyze(
 
             new_quota = quota - 1
             update_clinic_quota(db, request_data.api_key, new_quota)
-            with db: # with pour transaction
+            with db:
                 save_analysis(db, request_data.api_key, request_data.client_email, json_result)
 
             if (clinic_config and clinic_config.get("email_clinique")):
@@ -302,31 +303,30 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
 
- try:
-    if existing_config:
-        print("DEBUG: Updating existing config")
-        with db:  # with pour transaction
-            db.execute(
-                "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
-                (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
-            )
-    else:
-        print("DEBUG: Creating new config")
-        with db:  # with pour transaction
-            db.execute(
-                "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
-                (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
-            )
-    
-    save_db(db)  # Moved outside the conditional blocks
-    return {"status": "success"}
+    try:
+        if existing_config:
+            print("DEBUG: Updating existing config")
+            with db: # with pour transaction
+                db.execute(
+                    "UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?",
+                    (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
+                )
+        else:
+            print("DEBUG: Creating new config")
+            with db: # with pour transaction
+                db.execute(
+                    "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (?, ?, ?, ?, ?, ?)",
+                    (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 0, 0, None)
+                )
+        return {"status": "success"}
 
-except Exception as e:
-    print("DEBUG: Exception in update_config:", e)
-    raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
+    except Exception as e:
+        print("DEBUG: Exception in update_config:", e)
+        raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
+    finally:
+        db.close()
 
-finally:  # AJOUT IMPORTANT: Ferme la connexion dans tous les cas
-    db.close()
+
 
 from admin import router as admin_router  # type: ignore
 app.include_router(admin_router, prefix="/admin")
