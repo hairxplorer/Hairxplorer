@@ -14,10 +14,10 @@ DATABASE_PATH = os.path.join(os.path.dirname(__file__), '..', 'clinics', 'config
 def get_db_connection():
     """Crée une nouvelle connexion à la base de données *fichier*, thread-safe."""
     db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)  # IMPORTANT: check_same_thread=False
-    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA journal_mode=WAL")  # Amélioration pour la concurrence
     return db
 
-async def get_db():
+async def get_db(): #Fonction pour FastAPI
     db = get_db_connection()
     try:
         yield db
@@ -28,8 +28,9 @@ async def get_db():
 async def admin_dashboard(request: Request, db: sqlite3.Connection = Depends(get_db)):
     try:
         cursor = db.cursor()
-        cursor.execute("SELECT api_key, email_clinique, pricing FROM clinics")
-        clinics = cursor.fetchall()
+        with db:
+            cursor.execute("SELECT api_key, email_clinique, pricing FROM clinics")
+            clinics = cursor.fetchall()
         clinic_list = []
         for clinic in clinics:
             api_key, email, pricing = clinic
@@ -50,8 +51,9 @@ async def admin_dashboard(request: Request, db: sqlite3.Connection = Depends(get
 async def edit_clinic(request: Request, api_key: str, db: sqlite3.Connection = Depends(get_db)):
     try:
         cursor = db.cursor()
-        cursor.execute("SELECT api_key, email_clinique, pricing FROM clinics WHERE api_key = ?", (api_key,))
-        row = cursor.fetchone()
+        with db:
+            cursor.execute("SELECT api_key, email_clinique, pricing FROM clinics WHERE api_key = ?", (api_key,))
+            row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Clinique non trouvée")
         api_key_val, email, pricing = row
@@ -64,7 +66,7 @@ async def edit_clinic(request: Request, api_key: str, db: sqlite3.Connection = D
         return HTMLResponse(f"<h1>Erreur lors de l'édition</h1><p>{str(e)}</p>", status_code=500)
 
 @router.post("/edit/{api_key}")
-async def update_clinic(api_key: str,  db: sqlite3.Connection = Depends(get_db), request: Request): #Plus besoin de Form
+async def update_clinic(api_key: str,  request: Request, db: sqlite3.Connection = Depends(get_db)): #Plus besoin de Form + correction ordre arguments
     try:
         form_data = await request.form() #Récupère les données du formulaire
         email_clinique = form_data.get("email_clinique") #Récupère la valeur de la clé email_clinique
@@ -92,8 +94,9 @@ async def update_clinic(api_key: str,  db: sqlite3.Connection = Depends(get_db),
 async def list_analyses(request: Request, db: sqlite3.Connection = Depends(get_db)):
     try:
         cursor = db.cursor()
-        cursor.execute("SELECT id, clinic_api_key, client_email, result, timestamp FROM analyses ORDER BY timestamp DESC")
-        analyses = cursor.fetchall()
+        with db:
+            cursor.execute("SELECT id, clinic_api_key, client_email, result, timestamp FROM analyses ORDER BY timestamp DESC")
+            analyses = cursor.fetchall()
         analysis_list = []
         for a in analyses:
             id_val, clinic_api_key, client_email, result, timestamp = a
