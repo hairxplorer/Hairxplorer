@@ -45,7 +45,7 @@ class ClinicConfig(BaseModel):  #Inutile pour /update-config
     pricing: Dict[str, int] = {}
     button_color: str = "#0000ff"
 
-class AnalysisRequest(BaseModel): #Inutile pour /update-config
+class AnalysisRequest(BaseModel): #Inutile pour /update-config, on l'enlève
     api_key: str
     client_email: EmailStr
     consent: bool
@@ -183,46 +183,20 @@ async def analyze(
     top: UploadFile = File(...),
     side: UploadFile = File(...),
     back: UploadFile = File(...),
-    api_key: str = Form(...),
-    client_email: str = Form(...),
-    consent: bool = Form(...)
-    , db: sqlite3.Connection = Depends(get_db)
+    api_key: str = Form(...),  # <--- MODIFICATION ICI
+    client_email: str = Form(...),  # <--- MODIFICATION ICI
+    consent: bool = Form(...)  # <--- MODIFICATION ICI
+    , db: sqlite3.Connection = Depends(get_db)  #Utilisation de get_db
 ):
     try:
-        if not consent:  # Correction: Utilisation directe de 'consent'
+        if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
 
-        clinic_config = get_clinic_config(db, api_key)  # Correction: Utilisation directe de 'api_key'
+        clinic_config = get_clinic_config(db, api_key)  # Utilisation directe de api_key
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
 
-        reset_quota_if_needed(db, clinic_config, api_key) # Correction: Utilisation directe de 'api_key'
-
-        quota = clinic_config.get("analysis_quota")
-        if quota is None:
-            raise HTTPException(status_code=400, detail="Quota is not defined for this clinic")
-        if isinstance(quota, int) and quota <= 0:
-            raise HTTPException(status_code=403, detail="Analysis quota exhausted")@app.post("/analyze")
-async def analyze(
-    background_tasks: BackgroundTasks,
-    front: UploadFile = File(...),
-    top: UploadFile = File(...),
-    side: UploadFile = File(...),
-    back: UploadFile = File(...),
-    api_key: str = Form(...),
-    client_email: str = Form(...),
-    consent: bool = Form(...)
-    , db: sqlite3.Connection = Depends(get_db)
-):
-    try:
-        if not consent:  # Correction: Utilisation directe de 'consent'
-            raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
-
-        clinic_config = get_clinic_config(db, api_key)  # Correction: Utilisation directe de 'api_key'
-        if not clinic_config:
-            raise HTTPException(status_code=404, detail="Clinic not found")
-
-        reset_quota_if_needed(db, clinic_config, api_key) # Correction: Utilisation directe de 'api_key'
+        reset_quota_if_needed(db, clinic_config, api_key) # Utilisation directe de api_key
 
         quota = clinic_config.get("analysis_quota")
         if quota is None:
@@ -289,26 +263,26 @@ async def analyze(
                 if stade and stade in pricing:
                     json_result["price_range"] = f"{pricing[stade]}€"
 
-             new_quota = quota - 1
-                    update_clinic_quota(db, api_key, new_quota) #Correction ici
-                    with db:
-                        save_analysis(db, api_key, client_email, json_result) # et ici
-            
-                    if (clinic_config and clinic_config.get("email_clinique")):
-                        background_tasks.add_task(
-                            send_email_task,
-                            clinic_config["email_clinique"],
-                            "New Analysis Result",
-                            f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}" # et ici
-                        )
-            
-                    background_tasks.add_task(
-                        send_email_task,
-                        client_email, # et ici
-                        "Your Analysis Result",
-                        f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
-                    )
-                    return json_result
+            new_quota = quota - 1
+            update_clinic_quota(db, api_key, new_quota) #Correction ici
+            with db:
+                save_analysis(db, api_key, client_email, json_result) # et ici
+
+            if (clinic_config and clinic_config.get("email_clinique")):
+                background_tasks.add_task(
+                    send_email_task,
+                    clinic_config["email_clinique"],
+                    "New Analysis Result",
+                    f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}" # et ici
+                )
+
+            background_tasks.add_task(
+                send_email_task,
+                client_email, # et ici
+                "Your Analysis Result",
+                f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
+            )
+            return json_result
 
         except Exception as e:
             print("DEBUG: Exception =", e)
