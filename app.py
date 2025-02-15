@@ -1,9 +1,4 @@
-import os
-import base64
-import sqlite3
-import json
-import re
-import smtplib
+import os, base64, sqlite3, json, re, smtplib, asyncio
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
@@ -17,18 +12,8 @@ from typing import Optional, Dict
 from dotenv import load_dotenv
 
 load_dotenv()
-
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Type", "Content-Length"]
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"], expose_headers=["Content-Type", "Content-Length"])
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class SMTPConfig(BaseModel):
@@ -45,35 +30,56 @@ class ClinicConfigUpdate(BaseModel):
     button_color: str = "#0000ff"
 
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db')
+print(f"DEBUG: DATABASE_PATH = {DATABASE_PATH}")
 
 def get_db_connection():
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
+    clinic_dir = os.path.dirname(DATABASE_PATH)
+    print(f"DEBUG: clinics directory: {clinic_dir}")
+    if not os.path.exists(clinic_dir):
+        print("DEBUG: clinics directory does NOT exist. Creating...")
+        os.makedirs(clinic_dir, exist_ok=True)
+        print("DEBUG: clinics directory created.")
+    else:
+        print("DEBUG: clinics directory exists.")
+    if not os.path.exists(DATABASE_PATH):
+        print("DEBUG: config.db does NOT exist. Creating...")
+        open(DATABASE_PATH, 'a').close()
+        print("DEBUG: config.db created.")
+    else:
+        print("DEBUG: config.db exists.")
     db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
     db.execute("PRAGMA journal_mode=WAL")
     return db
 
 def init_db(db: sqlite3.Connection):
-    with db:
-        db.execute('''
-            CREATE TABLE IF NOT EXISTS clinics (
-                api_key TEXT PRIMARY KEY,
-                email_clinique TEXT,
-                pricing TEXT,
-                analysis_quota INTEGER DEFAULT 0,
-                default_quota INTEGER DEFAULT 0,
-                subscription_start TEXT
-            )
-        ''')
-        db.execute('''
-            CREATE TABLE IF NOT EXISTS analyses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                clinic_api_key TEXT,
-                client_email TEXT,
-                result TEXT,
-                timestamp TEXT,
-                FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
-            )
-        ''')
+    print("DEBUG: init_db called")
+    try:
+        with db:
+            db.execute('''
+                CREATE TABLE IF NOT EXISTS clinics (
+                    api_key TEXT PRIMARY KEY,
+                    email_clinique TEXT,
+                    pricing TEXT,
+                    analysis_quota INTEGER DEFAULT 0,
+                    default_quota INTEGER DEFAULT 0,
+                    subscription_start TEXT
+                )
+            ''')
+            print("DEBUG: Table 'clinics' created or verified.")
+            db.execute('''
+                CREATE TABLE IF NOT EXISTS analyses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    clinic_api_key TEXT,
+                    client_email TEXT,
+                    result TEXT,
+                    timestamp TEXT,
+                    FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
+                )
+            ''')
+            print("DEBUG: Table 'analyses' created or verified.")
+    except Exception as e:
+        print(f"DEBUG: Erreur dans init_db: {e}")
+        raise
 
 async def get_db():
     db = get_db_connection()
@@ -83,9 +89,11 @@ async def get_db():
         db.close()
 
 def get_clinic_config(db: sqlite3.Connection, api_key: str):
+    print(f"DEBUG: get_clinic_config called with api_key: {api_key}")
     cursor = db.cursor()
     cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
     row = cursor.fetchone()
+    print(f"DEBUG: get_clinic_config, row: {row}")
     if row:
         email_clinique, pricing_str, analysis_quota, default_quota, subscription_start = row
         pricing = json.loads(pricing_str) if pricing_str else {}
@@ -96,9 +104,11 @@ def get_clinic_config(db: sqlite3.Connection, api_key: str):
             "default_quota": default_quota,
             "subscription_start": subscription_start
         }
+    print("DEBUG: Clinique non trouvée")
     return None
 
 def update_clinic_quota(db: sqlite3.Connection, api_key: str, new_quota: int, new_subscription_start: str = None):
+    print(f"DEBUG: update_clinic_quota called with api_key: {api_key}, new_quota: {new_quota}, new_subscription_start: {new_subscription_start}")
     with db:
         if new_subscription_start:
             db.execute("UPDATE clinics SET analysis_quota = ?, subscription_start = ? WHERE api_key = ?", (new_quota, new_subscription_start, api_key))
@@ -123,6 +133,7 @@ def send_email_task(to_email: str, subject: str, body: str):
     _send_email(to_email, subject, body)
 
 def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: str):
+    print(f"DEBUG: reset_quota_if_needed called with clinic_config: {clinic_config}, api_key: {api_key}")
     subscription_start = clinic_config.get("subscription_start")
     now = datetime.utcnow()
     reset_quota = False
@@ -133,7 +144,6 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
             reset_quota = True
     else:
         reset_quota = True
-
     if reset_quota:
         default_quota = clinic_config.get("default_quota")
         if default_quota is None:
@@ -142,6 +152,20 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
             update_clinic_quota(db, api_key, default_quota, now.isoformat())
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
+    print("DEBUG: reset_quota_if_needed finished")
+
+def save_analysis(db: sqlite3.Connection, api_key: str, client_email: str, result: dict):
+    timestamp = datetime.utcnow().isoformat()
+    print("DEBUG: save_analysis called")
+    with db:
+        try:
+            db.execute(
+                "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (?, ?, ?, ?)",
+                (api_key, client_email, json.dumps(result), timestamp)
+            )
+        except Exception as e:
+            print("DEBUG: Erreur dans save_analysis", e)
+            raise
 
 @app.post("/analyze")
 async def analyze(
@@ -156,10 +180,16 @@ async def analyze(
     , db: sqlite3.Connection = Depends(get_db)
 ):
     try:
+        print("DEBUG: /analyze called")
+        print("DEBUG: api_key =", api_key)
+        print("DEBUG: client_email =", client_email)
+        print("DEBUG: consent =", consent)
+
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
 
         clinic_config = get_clinic_config(db, api_key)
+        print("DEBUG: clinic_config =", clinic_config)
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
 
@@ -218,10 +248,8 @@ async def analyze(
             json_str = match.group(0)
             print("DEBUG: Extracted JSON =", json_str)
 
-            try:
-                json_result = json.loads(json_str)
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Invalid response from OpenAI: {e}")
+            json_result = json.loads(json_str)
+
 
             if clinic_config and "pricing" in clinic_config:
                 pricing = clinic_config["pricing"]
@@ -251,7 +279,7 @@ async def analyze(
             return json_result
 
         except Exception as e:
-            print("DEBUG: Exception =", e)
+            print("DEBUG: Exception in analyze:", e)
             raise HTTPException(status_code=500, detail=str(e))
 
     finally:
@@ -301,6 +329,7 @@ async def on_startup():
     init_db(db)
     db.close()
     print("DEBUG: Database initialized on startup.")
+
 
 from admin import router as admin_router  # type: ignore
 app.include_router(admin_router, prefix="/admin")
