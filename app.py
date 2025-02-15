@@ -5,7 +5,7 @@ import json
 import re
 import smtplib
 from email.mime.text import MIMEText
-from datetime import datetime, timedelta  # Ajout de cette ligne
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,18 +39,18 @@ class SMTPConfig(BaseModel):
     user: EmailStr = Field(..., env="SMTP_USER")
     password: str = Field(..., env="SMTP_PASSWORD")
 
-# class AnalysisRequest(BaseModel):  # Plus besoin
+# class AnalysisRequest(BaseModel): #Inutile pour /update-config , on l'enlève
 #     api_key: str
 #     client_email: EmailStr
 #     consent: bool
 
-class AnalysisResult(BaseModel):
+class AnalysisResult(BaseModel):  #Inutile pour le moment
     stade: str
     price_range: Optional[str] = None
     details: str
     evaluation: str
 
-class ClinicConfigUpdate(BaseModel):
+class ClinicConfigUpdate(BaseModel):  # Utiliser pour /update-config
     api_key: str
     email: Optional[EmailStr] = None
     smtp: Optional[SMTPConfig] = None
@@ -59,16 +59,18 @@ class ClinicConfigUpdate(BaseModel):
 
 # --- Fonctions utilitaires ---
 
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db')
+DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db') # Chemin absolu
 
 def get_db_connection():
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
-    db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-    db.execute("PRAGMA journal_mode=WAL")
+    """Crée une nouvelle connexion à la base de données *fichier*, thread-safe."""
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire!
+    db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)  # IMPORTANT: check_same_thread=False
+    db.execute("PRAGMA journal_mode=WAL")  # Amélioration pour la concurrence
     return db
 
 def init_db(db: sqlite3.Connection):
-     with db:
+    """Initialise la base de données (en mémoire)."""
+    with db: # with pour transaction
         db.execute('''
             CREATE TABLE IF NOT EXISTS clinics (
                 api_key TEXT PRIMARY KEY,
@@ -90,14 +92,16 @@ def init_db(db: sqlite3.Connection):
             )
         ''')
 
-async def get_db():
+async def get_db(): #Fonction pour FastAPI
     db = get_db_connection()
     try:
         yield db
     finally:
         db.close()
 
+
 def get_clinic_config(db: sqlite3.Connection, api_key: str):
+    """Récupère la configuration d'une clinique."""
     cursor = db.cursor()
     cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
     row = cursor.fetchone()
@@ -111,10 +115,12 @@ def get_clinic_config(db: sqlite3.Connection, api_key: str):
             "default_quota": default_quota,
             "subscription_start": subscription_start
         }
+    print("DEBUG : Clinique non trouvée")
     return None
 
 def update_clinic_quota(db: sqlite3.Connection, api_key: str, new_quota: int, new_subscription_start: str = None):
-    with db:
+    """Met à jour le quota et/ou la date de souscription."""
+    with db: # with pour transaction
         if new_subscription_start:
             db.execute("UPDATE clinics SET analysis_quota = ?, subscription_start = ? WHERE api_key = ?", (new_quota, new_subscription_start, api_key))
         else:
@@ -122,24 +128,27 @@ def update_clinic_quota(db: sqlite3.Connection, api_key: str, new_quota: int, ne
 
 
 def _send_email(to_email: str, subject: str, body: str):
+    """Fonction interne pour envoyer un e-mail (ne pas exposer directement)."""
     try:
-        smtp_config = SMTPConfig()
-        msg = MIMEText(body, "plain", "utf-8")
-        msg["Subject"] = subject
-        msg["From"] = smtp_config.user
-        msg["To"] = to_email
-        with smtplib.SMTP(smtp_config.server, smtp_config.port) as server:
-            server.starttls()
-            server.login(smtp_config.user, smtp_config.password)
-            server.sendmail(smtp_config.user, [to_email], msg.as_string())
+      smtp_config = SMTPConfig()
+      msg = MIMEText(body, "plain", "utf-8")
+      msg["Subject"] = subject
+      msg["From"] = smtp_config.user
+      msg["To"] = to_email
+      with smtplib.SMTP(smtp_config.server, smtp_config.port) as server:
+          server.starttls()
+          server.login(smtp_config.user, smtp_config.password)
+          server.sendmail(smtp_config.user, [to_email], msg.as_string())
     except Exception as e:
         print(f"Error sending email: {e}")
+        # Gérer l'erreur (journaliser, réessayer, etc.)
 
 def send_email_task(to_email: str, subject: str, body: str):
+    """Tâche en arrière-plan pour envoyer un e-mail."""
     _send_email(to_email, subject, body)
 
-
 def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: str):
+    """Réinitialise le quota si nécessaire."""
     subscription_start = clinic_config.get("subscription_start")
     now = datetime.utcnow()
     reset_quota = False
@@ -161,14 +170,14 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
         clinic_config["subscription_start"] = now.isoformat()
 
 def save_analysis(db: sqlite3.Connection, api_key: str, client_email: str, result: dict):
-     timestamp = datetime.utcnow().isoformat()
-     with db:
+    """Enregistre une analyse."""
+    timestamp = datetime.utcnow().isoformat()
+    with db:
         db.execute(
             "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (?, ?, ?, ?)",
             (api_key, client_email, json.dumps(result), timestamp)
         )
 # --- Routes FastAPI ---
-
 @app.post("/analyze")
 async def analyze(
     background_tasks: BackgroundTasks,
@@ -182,10 +191,16 @@ async def analyze(
     , db: sqlite3.Connection = Depends(get_db)
 ):
     try:
+        print("DEBUG: /analyze called")
+        print("DEBUG: api_key =", api_key)
+        print("DEBUG: client_email =", client_email)
+        print("DEBUG: consent =", consent)
+
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
 
         clinic_config = get_clinic_config(db, api_key)
+        print("DEBUG: clinic_config =", clinic_config)
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
 
@@ -245,7 +260,7 @@ async def analyze(
             print("DEBUG: Extracted JSON =", json_str)
 
             try:
-                json_result = json.loads(json_str)
+                json_result = json.loads(json_str) # On décode le JSON
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Invalid response from OpenAI: {e}")
 
