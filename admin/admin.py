@@ -12,7 +12,7 @@ templates = Jinja2Templates(directory="admin/templates")
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), '..', 'clinics', 'config.db')
 
 def get_db_connection():
-    """Crée une nouvelle connexion à la base de données *fichier*, thread-safe."""
+    """Crée une nouvelle connexion à la base de données, thread-safe."""
     db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
     db.execute("PRAGMA journal_mode=WAL")
     return db
@@ -33,18 +33,18 @@ async def admin_dashboard(request: Request, db: sqlite3.Connection = Depends(get
             clinics = cursor.fetchall()
         clinic_list = []
         for clinic in clinics:
-            api_key, email, pricing, analysis_quota, default_quota, subscription_start = clinic #Récupération des données
+            api_key, email, pricing, analysis_quota, default_quota, subscription_start = clinic  # Récupération des valeurs
             try:
                 pricing = json.loads(pricing) if pricing else {}
-            except Exception as e:
+            except (json.JSONDecodeError, TypeError):
                 pricing = {}
             clinic_list.append({
                 "api_key": api_key,
                 "email_clinique": email,
                 "pricing": pricing,
-                "analysis_quota": analysis_quota, #Ajout
-                "default_quota": default_quota, #Ajout
-                "subscription_start": subscription_start #Ajout
+                "analysis_quota": analysis_quota,  # Ajout des valeurs manquantes
+                "default_quota": default_quota,
+                "subscription_start": subscription_start
             })
         return templates.TemplateResponse("dashboard.html", {"request": request, "clinics": clinic_list})
     except Exception as e:
@@ -62,43 +62,42 @@ async def edit_clinic(request: Request, api_key: str, db: sqlite3.Connection = D
         api_key_val, email, pricing, analysis_quota, default_quota, subscription_start = row #Récupération des données
         try:
             pricing_dict = json.loads(pricing) if pricing else {}
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             pricing_dict = {}
-        return templates.TemplateResponse("edit_clinic.html", {"request": request, "clinic": {"api_key": api_key_val, "email_clinique": email, "pricing": pricing_dict, "analysis_quota": analysis_quota, "default_quota": default_quota, "subscription_start": subscription_start}}) #On passe tout au template
+        return templates.TemplateResponse("edit_clinic.html", {"request": request, "clinic": {"api_key": api_key_val, "email_clinique": email, "pricing": pricing_dict, "analysis_quota": analysis_quota, "default_quota":default_quota, "subscription_start":subscription_start}}) #On passe tout au template
+
     except Exception as e:
         return HTMLResponse(f"<h1>Erreur lors de l'édition</h1><p>{str(e)}</p>", status_code=500)
 
 @router.post("/edit/{api_key}")
-async def update_clinic(api_key: str,  request: Request, db: sqlite3.Connection = Depends(get_db)): #Plus besoin de Form + correction ordre arguments
+async def update_clinic(api_key: str, request: Request, db: sqlite3.Connection = Depends(get_db)):
     try:
-        form_data = await request.form() #Récupère les données du formulaire
-        email_clinique = form_data.get("email_clinique") #Récupère la valeur de la clé email_clinique
-        pricing_json = form_data.get("pricing_json") #Récupère la valeur de la clé pricing
+        form_data = await request.form()
+        email_clinique = form_data.get("email_clinique")
+        pricing_json = form_data.get("pricing_json") #On recupere le pricing
         try:
-            json.loads(pricing_json) #On verifie que c'est bien du json
+            json.loads(pricing_json)
         except Exception as e:
             raise HTTPException(status_code=400, detail="Le champ Pricing doit être un JSON valide.")
         try:
             cursor = db.cursor()
             with db: # with pour transaction
                 cursor.execute("UPDATE clinics SET email_clinique = ?, pricing = ? WHERE api_key = ?", (email_clinique, pricing_json, api_key))
-            # Utilisez request.url_for pour générer l'URL de redirection *correctement*
-            url = request.url_for("admin_dashboard") #Redirection avec le nom de la fonction
+            url = request.url_for("admin_dashboard") #Redirection correct
             return RedirectResponse(url=url, status_code=303)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour : {str(e)}")
     except HTTPException:
-        raise #Si y'a dejà une erreur on la renvoi
-    except Exception as e: #On gère les autres erreurs
+        raise
+    except Exception as e:
         print(f"DEBUG: Exception in update_config: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-
 
 @router.get("/analyses", response_class=HTMLResponse)
 async def list_analyses(request: Request, db: sqlite3.Connection = Depends(get_db)):
     try:
         cursor = db.cursor()
-        with db: # with pour transaction
+        with db: #with pour transaction
             cursor.execute("SELECT id, clinic_api_key, client_email, result, timestamp FROM analyses ORDER BY timestamp DESC")
             analyses = cursor.fetchall()
         analysis_list = []
@@ -107,7 +106,7 @@ async def list_analyses(request: Request, db: sqlite3.Connection = Depends(get_d
             try:
                 result_dict = json.loads(result)
             except Exception:
-                result_dict = result  # Ou une autre valeur par défaut/gestion d'erreur
+                result_dict = result
             analysis_list.append({
                 "id": id_val,
                 "clinic_api_key": clinic_api_key,
