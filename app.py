@@ -124,9 +124,18 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: sqlite3
     finally:
         db.close()
 
-# @app.post("/analyze")  #<---  ON COMMENTE /analyze POUR L'INSTANT
-# async def analyze(...):
-#     ...
+@app.post("/analyze")
+async def analyze(
+    background_tasks: BackgroundTasks,
+    front: UploadFile = File(...),
+    top: UploadFile = File(...),
+    side: UploadFile = File(...),
+    back: UploadFile = File(...),
+    api_key: str = Form(...),  # <--- Form(...)
+    client_email: str = Form(...),  # <--- Form(...)
+    consent: bool = Form(...)  # <--- Form(...)
+    , db: sqlite3.Connection = Depends(get_db)
+):
 
 # from admin import router as admin_router  # type: ignore  #<--- ON COMMENTE AUSSI
 # app.include_router(admin_router, prefix="/admin")
