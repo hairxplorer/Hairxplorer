@@ -1,47 +1,50 @@
-from fastapi import APIRouter, Request, Form, HTTPException, Depends
+from fastapi import APIRouter, Request, Form, HTTPException, Depends, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import sqlite3
 import json
-import os  # Ajouté pour os.path.join
+import os
 
 router = APIRouter()
 templates = Jinja2Templates(directory="admin/templates")
 
 # Utilisez le MÊME chemin que dans app.py
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), '..', 'clinics', 'config.db')  # Chemin absolu
+DATABASE_PATH = os.path.join(os.path.dirname(__file__), '..', 'clinics', 'config.db')
 
 def get_db_connection():
     """Crée une nouvelle connexion à la base de données *fichier*, thread-safe."""
-    db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)  # IMPORTANT: check_same_thread=False
-    db.execute("PRAGMA journal_mode=WAL")  # Amélioration pour la concurrence
+    db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    db.execute("PRAGMA journal_mode=WAL")
     return db
 
-async def get_db(): #Fonction pour FastAPI
+async def get_db():
     db = get_db_connection()
     try:
         yield db
     finally:
         db.close()
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, name="admin_dashboard") #Ajout du name
 async def admin_dashboard(request: Request, db: sqlite3.Connection = Depends(get_db)):
     try:
         cursor = db.cursor()
-        with db:
-            cursor.execute("SELECT api_key, email_clinique, pricing FROM clinics")
+        with db: # with pour transaction
+            cursor.execute("SELECT api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics")
             clinics = cursor.fetchall()
         clinic_list = []
         for clinic in clinics:
-            api_key, email, pricing = clinic
+            api_key, email, pricing, analysis_quota, default_quota, subscription_start = clinic #Récupération des données
             try:
                 pricing = json.loads(pricing) if pricing else {}
             except Exception as e:
-                pricing = {}  # Ou une autre valeur par défaut
+                pricing = {}
             clinic_list.append({
                 "api_key": api_key,
                 "email_clinique": email,
-                "pricing": pricing
+                "pricing": pricing,
+                "analysis_quota": analysis_quota, #Ajout
+                "default_quota": default_quota, #Ajout
+                "subscription_start": subscription_start #Ajout
             })
         return templates.TemplateResponse("dashboard.html", {"request": request, "clinics": clinic_list})
     except Exception as e:
@@ -51,17 +54,17 @@ async def admin_dashboard(request: Request, db: sqlite3.Connection = Depends(get
 async def edit_clinic(request: Request, api_key: str, db: sqlite3.Connection = Depends(get_db)):
     try:
         cursor = db.cursor()
-        with db:
-            cursor.execute("SELECT api_key, email_clinique, pricing FROM clinics WHERE api_key = ?", (api_key,))
+        with db: # with pour transaction
+            cursor.execute("SELECT api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
             row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Clinique non trouvée")
-        api_key_val, email, pricing = row
+        api_key_val, email, pricing, analysis_quota, default_quota, subscription_start = row #Récupération des données
         try:
             pricing_dict = json.loads(pricing) if pricing else {}
         except Exception:
-            pricing_dict = {}  # Ou une autre valeur par défaut/gestion d'erreur
-        return templates.TemplateResponse("edit_clinic.html", {"request": request, "clinic": {"api_key": api_key_val, "email_clinique": email, "pricing": pricing_dict}})
+            pricing_dict = {}
+        return templates.TemplateResponse("edit_clinic.html", {"request": request, "clinic": {"api_key": api_key_val, "email_clinique": email, "pricing": pricing_dict, "analysis_quota": analysis_quota, "default_quota": default_quota, "subscription_start": subscription_start}}) #On passe tout au template
     except Exception as e:
         return HTMLResponse(f"<h1>Erreur lors de l'édition</h1><p>{str(e)}</p>", status_code=500)
 
@@ -70,9 +73,9 @@ async def update_clinic(api_key: str,  request: Request, db: sqlite3.Connection 
     try:
         form_data = await request.form() #Récupère les données du formulaire
         email_clinique = form_data.get("email_clinique") #Récupère la valeur de la clé email_clinique
-        pricing_json = form_data.get("pricing") #Récupère la valeur de la clé pricing
+        pricing_json = form_data.get("pricing_json") #Récupère la valeur de la clé pricing
         try:
-            json.loads(pricing_json)
+            json.loads(pricing_json) #On verifie que c'est bien du json
         except Exception as e:
             raise HTTPException(status_code=400, detail="Le champ Pricing doit être un JSON valide.")
         try:
@@ -86,15 +89,16 @@ async def update_clinic(api_key: str,  request: Request, db: sqlite3.Connection 
             raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour : {str(e)}")
     except HTTPException:
         raise #Si y'a dejà une erreur on la renvoi
-    except Exception as e:
+    except Exception as e: #On gère les autres erreurs
         print(f"DEBUG: Exception in update_config: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 
 @router.get("/analyses", response_class=HTMLResponse)
 async def list_analyses(request: Request, db: sqlite3.Connection = Depends(get_db)):
     try:
         cursor = db.cursor()
-        with db:
+        with db: # with pour transaction
             cursor.execute("SELECT id, clinic_api_key, client_email, result, timestamp FROM analyses ORDER BY timestamp DESC")
             analyses = cursor.fetchall()
         analysis_list = []
