@@ -1,19 +1,17 @@
 import os
-import base64
 import sqlite3
 import json
 import re
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
-
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI
 from PIL import Image
 from io import BytesIO
-from pydantic import BaseModel, EmailStr, validator, Field
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict
 from dotenv import load_dotenv
 
@@ -21,160 +19,78 @@ load_dotenv()
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Type", "Content-Length"]
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"], expose_headers=["Content-Type", "Content-Length"])
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# --- Modèles Pydantic ---
 class SMTPConfig(BaseModel):
     server: str = Field(..., env="SMTP_SERVER")
     port: int = Field(..., env="SMTP_PORT")
     user: EmailStr = Field(..., env="SMTP_USER")
     password: str = Field(..., env="SMTP_PASSWORD")
 
-class ClinicConfig(BaseModel):  #Inutile pour /update-config
-    email: Optional[EmailStr] = None
-    smtp: Optional[SMTPConfig] = None
-    pricing: Dict[str, int] = {}
-    button_color: str = "#0000ff"
-
-# class AnalysisRequest(BaseModel): #Inutile pour /update-config , on l'enlève
-#     api_key: str
-#     client_email: EmailStr
-#     consent: bool
-
-class AnalysisResult(BaseModel):  #Inutile pour /update-config
-    stade: str
-    price_range: Optional[str] = None
-    details: str
-    evaluation: str
-
-class ClinicConfigUpdate(BaseModel):  # Utiliser pour /update-config
+class ClinicConfigUpdate(BaseModel):
     api_key: str
     email: Optional[EmailStr] = None
     smtp: Optional[SMTPConfig] = None
     pricing: Dict[str, int] = {}
     button_color: str = "#0000ff"
 
-# --- Fonctions utilitaires ---
-
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db') # Chemin absolu
+DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'clinics', 'config.db')
 
 def get_db_connection():
-    """Crée une nouvelle connexion à la base de données *fichier*, thread-safe."""
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)  # Crée le répertoire!
-    db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)  # IMPORTANT: check_same_thread=False
-    db.execute("PRAGMA journal_mode=WAL")  # Amélioration pour la concurrence
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
+    db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    db.execute("PRAGMA journal_mode=WAL")
     return db
 
 def init_db(db: sqlite3.Connection):
-    """Initialise la base de données."""
-    try:
-        with db:
-            db.execute('''
-                CREATE TABLE IF NOT EXISTS clinics (
-                    api_key TEXT PRIMARY KEY,
-                    email_clinique TEXT,
-                    pricing TEXT,
-                    analysis_quota INTEGER DEFAULT 0,
-                    default_quota INTEGER DEFAULT 0,
-                    subscription_start TEXT
-                )
-            ''')
-            print("DEBUG: Table 'clinics' créée ou vérifiée.") #DEBUG
-            db.execute('''
-                CREATE TABLE IF NOT EXISTS analyses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    clinic_api_key TEXT,
-                    client_email TEXT,
-                    result TEXT,
-                    timestamp TEXT,
-                    FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
-                )
-            ''')
-            print("DEBUG: Table 'analyses' créée ou vérifiée.") #DEBUG
-    except Exception as e:
-        print(f"DEBUG: Erreur lors de la création des tables: {e}") #DEBUG
-        raise #On relance l'exception
+    with db:
+        db.execute("CREATE TABLE IF NOT EXISTS clinics (api_key TEXT PRIMARY KEY, email_clinique TEXT, pricing TEXT, analysis_quota INTEGER DEFAULT 0, default_quota INTEGER DEFAULT 0, subscription_start TEXT)")
+        db.execute("CREATE TABLE IF NOT EXISTS analyses (id INTEGER PRIMARY KEY AUTOINCREMENT, clinic_api_key TEXT, client_email TEXT, result TEXT, timestamp TEXT, FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key))")
 
-
-async def get_db(): #Fonction pour FastAPI
+async def get_db():
     db = get_db_connection()
     try:
         yield db
     finally:
         db.close()
 
-
 def get_clinic_config(db: sqlite3.Connection, api_key: str):
-    """Récupère la configuration d'une clinique."""
     cursor = db.cursor()
-    print(f"DEBUG: get_clinic_config called with api_key: {api_key}") #DEBUG
-    try:
-        cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
-        row = cursor.fetchone()
-        print(f"DEBUG: get_clinic_config, row: {row}")
-        if row:
-            email_clinique, pricing_str, analysis_quota, default_quota, subscription_start = row
-            pricing = json.loads(pricing_str) if pricing_str else {}
-            return {
-                "email_clinique": email_clinique,
-                "pricing": pricing,
-                "analysis_quota": analysis_quota,
-                "default_quota": default_quota,
-                "subscription_start": subscription_start
-            }
-    except Exception as e:
-        print(f"DEBUG: Erreur dans get_clinic_config: {e}") # DEBUG
-        raise #On relance l'exception
-    finally:
-        cursor.close()
-    print("DEBUG : Clinique non trouvée")
+    cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = ?", (api_key,))
+    row = cursor.fetchone()
+    if row:
+        email_clinique, pricing_str, analysis_quota, default_quota, subscription_start = row
+        pricing = json.loads(pricing_str) if pricing_str else {}
+        return {"email_clinique": email_clinique, "pricing": pricing, "analysis_quota": analysis_quota, "default_quota": default_quota, "subscription_start": subscription_start}
     return None
 
 def update_clinic_quota(db: sqlite3.Connection, api_key: str, new_quota: int, new_subscription_start: str = None):
-    """Met à jour le quota et/ou la date de souscription."""
-    print(f"DEBUG: update_clinic_quota called with api_key: {api_key}, new_quota: {new_quota}, new_subscription_start: {new_subscription_start}") #DEBUG
-    with db: # with pour transaction
-        try:
-            if new_subscription_start:
-                db.execute("UPDATE clinics SET analysis_quota = ?, subscription_start = ? WHERE api_key = ?", (new_quota, new_subscription_start, api_key))
-            else:
-                db.execute("UPDATE clinics SET analysis_quota = ? WHERE api_key = ?", (new_quota, api_key))
-        except Exception as e:
-            print("DEBUG: Erreur dans update_clinic_quota", e)
-            raise
+    with db:
+        if new_subscription_start:
+            db.execute("UPDATE clinics SET analysis_quota = ?, subscription_start = ? WHERE api_key = ?", (new_quota, new_subscription_start, api_key))
+        else:
+            db.execute("UPDATE clinics SET analysis_quota = ? WHERE api_key = ?", (new_quota, api_key))
 
 def _send_email(to_email: str, subject: str, body: str):
-    """Fonction interne pour envoyer un e-mail (ne pas exposer directement)."""
     try:
-      smtp_config = SMTPConfig()
-      msg = MIMEText(body, "plain", "utf-8")
-      msg["Subject"] = subject
-      msg["From"] = smtp_config.user
-      msg["To"] = to_email
-      with smtplib.SMTP(smtp_config.server, smtp_config.port) as server:
-          server.starttls()
-          server.login(smtp_config.user, smtp_config.password)
-          server.sendmail(smtp_config.user, [to_email], msg.as_string())
+        smtp_config = SMTPConfig()
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = smtp_config.user
+        msg["To"] = to_email
+        with smtplib.SMTP(smtp_config.server, smtp_config.port) as server:
+            server.starttls()
+            server.login(smtp_config.user, smtp_config.password)
+            server.sendmail(smtp_config.user, [to_email], msg.as_string())
     except Exception as e:
         print(f"Error sending email: {e}")
-        # Gérer l'erreur (journaliser, réessayer, etc.)
 
 def send_email_task(to_email: str, subject: str, body: str):
-    """Tâche en arrière-plan pour envoyer un e-mail."""
     _send_email(to_email, subject, body)
 
 def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: str):
-    """Réinitialise le quota si nécessaire."""
-    print(f"DEBUG: reset_quota_if_needed called with clinic_config: {clinic_config}, api_key: {api_key}")
     subscription_start = clinic_config.get("subscription_start")
     now = datetime.utcnow()
     reset_quota = False
@@ -194,23 +110,7 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
             update_clinic_quota(db, api_key, default_quota, now.isoformat())
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
-    print("DEBUG: reset_quota_if_needed finished")
 
-def save_analysis(db: sqlite3.Connection, api_key: str, client_email: str, result: dict):
-    """Enregistre une analyse."""
-    timestamp = datetime.utcnow().isoformat()
-    print("DEBUG: save_analysis called") #DEBUG
-    with db:
-        try:
-            db.execute(
-                "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (?, ?, ?, ?)",
-                (api_key, client_email, json.dumps(result), timestamp)
-            )
-        except Exception as e:
-            print("DEBUG: Erreur dans save_analysis", e)
-            raise
-
-# --- Routes FastAPI ---
 @app.post("/analyze")
 async def analyze(
     background_tasks: BackgroundTasks,
@@ -224,16 +124,10 @@ async def analyze(
     , db: sqlite3.Connection = Depends(get_db)
 ):
     try:
-        print("DEBUG: /analyze called")
-        print("DEBUG: api_key =", api_key)
-        print("DEBUG: client_email =", client_email)
-        print("DEBUG: consent =", consent)
-
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
 
         clinic_config = get_clinic_config(db, api_key)
-        print("DEBUG: clinic_config =", clinic_config)
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
 
@@ -245,7 +139,6 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-        # --- On commente TEMPORAIREMENT la partie images et OpenAI ---
         images = [
             Image.open(BytesIO(await file.read())).resize((512, 512))
             for file in [front, top, side, back]
@@ -286,7 +179,7 @@ async def analyze(
                 max_tokens=300
             )
             raw_response = response.choices[0].message.content
-            print("DEBUG: OpenAI Response =", raw_response) # pour le debug
+            print("DEBUG: OpenAI Response =", raw_response)
             match = re.search(r'\{.*\}', raw_response, re.DOTALL)
             if not match:
                 raise HTTPException(status_code=500, detail="Invalid response from OpenAI: No JSON found.")
@@ -294,8 +187,7 @@ async def analyze(
             print("DEBUG: Extracted JSON =", json_str)
 
             try:
-                json_result = AnalysisResult.parse_raw(json_str)
-                json_result = json_result.dict()
+                json_result = json.loads(json_str) #MODIFICATION ICI
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Invalid response from OpenAI: {e}")
 
@@ -304,37 +196,30 @@ async def analyze(
                 stade = json_result.get("stade", "").strip()
                 if stade and stade in pricing:
                     json_result["price_range"] = f"{pricing[stade]}€"
-        except Exception as e:
-            print("DEBUG: Exception on openAI", e)
-            raise HTTPException(status_code=500, detail=str(e))
 
-        # --- Fin de la partie commenté
-        new_quota = quota - 1
-        update_clinic_quota(db, api_key, new_quota)
-        with db:
-           save_analysis(db, api_key, client_email, json_result)
+            new_quota = quota - 1
+            update_clinic_quota(db, api_key, new_quota)
+            with db:
+                save_analysis(db, api_key, client_email, json_result)
 
+            if (clinic_config and clinic_config.get("email_clinique")):
+                background_tasks.add_task(
+                    send_email_task,
+                    clinic_config["email_clinique"],
+                    "New Analysis Result",
+                    f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
+                )
 
-        # --- On commente TEMPORAIREMENT la partie email ---
-        # if (clinic_config and clinic_config.get("email_clinique")):
-        #     background_tasks.add_task(
-        #         send_email_task,
-        #         clinic_config["email_clinique"],
-        #         "New Analysis Result",
-        #         f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
-        #     )
-
-        # background_tasks.add_task(
-        #     send_email_task,
-        #
-        #     client_email,
-            #     "Your Analysis Result",
-            #     f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
-            # )
+            background_tasks.add_task(
+                send_email_task,
+                client_email,
+                "Your Analysis Result",
+                f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
+            )
             return json_result
 
         except Exception as e:
-            print("DEBUG: Exception in analyze:", e)
+            print("DEBUG: Exception =", e)
             raise HTTPException(status_code=500, detail=str(e))
 
     finally:
