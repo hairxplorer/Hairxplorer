@@ -111,8 +111,9 @@ def reset_quota_if_needed(db: sqlite3.Connection, clinic_config: dict, api_key: 
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
 
-@app.post("/analyze")
-async def analyze(
+@app.post("/test-post")
+async def test_post():
+    return {"message": "POST request successful"}
     background_tasks: BackgroundTasks,
     front: UploadFile = File(...),
     top: UploadFile = File(...),
