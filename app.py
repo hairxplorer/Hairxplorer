@@ -183,8 +183,10 @@ async def analyze(
     top: UploadFile = File(...),
     side: UploadFile = File(...),
     back: UploadFile = File(...),
-    request_data: AnalysisRequest = Depends()
-    , db: sqlite3.Connection = Depends(get_db)  #Utilisation de get_db
+    api_key: str = Form(...),  # <--- MODIFICATION ICI
+    client_email: str = Form(...),  # <--- MODIFICATION ICI
+    consent: bool = Form(...)  # <--- MODIFICATION ICI, et type bool
+    , db: sqlite3.Connection = Depends(get_db)
 ):
     try:
         if not request_data.consent:
