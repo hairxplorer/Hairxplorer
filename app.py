@@ -1,21 +1,21 @@
 import os
-    import base64
-    import sqlite3
-    import json
-    import re
-    import smtplib
-    from email.mime.text import MIMEText
-    from datetime import datetime, timedelta
+import base64
+import sqlite3
+import json
+import re
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
 
-    from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.staticfiles import StaticFiles
-    from openai import AsyncOpenAI
-    from PIL import Image
-    from io import BytesIO
-    from pydantic import BaseModel, EmailStr, validator, Field
-    from typing import Optional, Dict
-    from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from openai import AsyncOpenAI
+from PIL import Image
+from io import BytesIO
+from pydantic import BaseModel, EmailStr, validator, Field
+from typing import Optional, Dict
+from dotenv import load_dotenv
 
     load_dotenv()
 
