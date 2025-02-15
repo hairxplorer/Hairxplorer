@@ -7,7 +7,7 @@ import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI
