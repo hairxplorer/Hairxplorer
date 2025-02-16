@@ -2,8 +2,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# Au démarrage, si la variable GOOGLE_CREDENTIALS_JSON est définie dans Railway,
-# écrire son contenu dans un fichier temporaire et définir GOOGLE_APPLICATION_CREDENTIALS.
+# Au démarrage, si la variable GOOGLE_CREDENTIALS_JSON est définie, on crée un fichier temporaire pour Google Vision.
 if "GOOGLE_CREDENTIALS_JSON" in os.environ:
     credentials_file = "/tmp/google_credentials.json"
     with open(credentials_file, "w") as f:
@@ -199,26 +198,56 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
-# Fonction d'analyse via Google Vision
+# Fonction d'analyse avec Google Vision et évaluation sur l'échelle Norwood
 def analyze_image_with_vision(image_bytes: bytes):
     client = vision.ImageAnnotatorClient()
     image = vision.Image(content=image_bytes)
     response = client.label_detection(image=image)
     labels = response.label_annotations
-    label_descriptions = [label.description.lower() for label in labels]
-    print("DEBUG: Labels détectés :", label_descriptions)
+
+    # Récupérer les labels et scores en minuscules
+    label_scores = {label.description.lower(): label.score for label in labels}
+    print("DEBUG: Labels détectés et scores:", label_scores)
     
-    # Logique d'analyse simplifiée basée sur les labels
-    if "bald" in label_descriptions or "baldness" in label_descriptions:
+    # On cherche des indices liés à la perte de cheveux
+    keywords = ["bald", "baldness", "hair loss", "thinning"]
+    bald_score = 0
+    for keyword in keywords:
+        if keyword in label_scores:
+            bald_score = max(bald_score, label_scores[keyword])
+    print("DEBUG: Bald score:", bald_score)
+    
+    # Mapping heuristique du score sur l'échelle Norwood (3 à 7)
+    if bald_score >= 0.8:
+        stage = "7"
+        details = ("Analyse très avancée : perte quasi totale de cheveux sur le sommet et la ligne frontale, "
+                   "seule une mince couronne résiduelle est présente, caractéristique du Norwood 7.")
+        evaluation = "Presque absence de cheveux sur le haut de la tête, perte maximale."
+        price_range = "4000-5000€"
+    elif bald_score >= 0.65:
         stage = "6"
-        details = "Les résultats indiquent une perte de cheveux très avancée avec zones dégarnies étendues, correspondant au Norwood 6."
-        evaluation = "Zone frontale et sommet fortement dégarnis, seule une couronne résiduelle subsiste."
+        details = ("Perte de cheveux très avancée, avec des zones dégarnies importantes sur le sommet et la ligne frontale, "
+                   "correspondant au Norwood 6.")
+        evaluation = "Dégarnissement marqué, seule une couronne résiduelle subsiste."
         price_range = "3000-4000€"
+    elif bald_score >= 0.45:
+        stage = "5"
+        details = ("Perte de cheveux avancée, où l’amincissement du sommet et la récession frontale sont significatifs, "
+                   "correspondant au Norwood 5.")
+        evaluation = "Perte notable sur le haut, transition progressive vers une zone dégarnie."
+        price_range = "2500-3500€"
+    elif bald_score >= 0.25:
+        stage = "4"
+        details = ("Début de perte de cheveux avancée avec amincissement notable du sommet et légère récession frontale, "
+                   "caractéristique du Norwood 4.")
+        evaluation = "Amincissement modéré, perte visible mais encore conservatrice."
+        price_range = "2000-3000€"
     else:
         stage = "3"
-        details = "L'analyse suggère une perte de cheveux modérée, caractéristique du Norwood 3."
-        evaluation = "Amincissement notable sur le sommet, mais présence significative de cheveux sur les côtés et l'arrière."
+        details = ("Perte de cheveux modérée avec amincissement localisé sur le sommet, typique du Norwood 3.")
+        evaluation = "Amincissement initial, densité encore globalement préservée."
         price_range = "1500-2500€"
+    
     return {
         "stade": stage,
         "price_range": price_range,
@@ -279,6 +308,7 @@ async def analyze(
         json_result = analyze_image_with_vision(image_bytes)
         print("DEBUG: Résultat Vision =", json_result)
 
+        # Si la configuration de la clinique définit une tarification spécifique, on peut la surcharger.
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
             stade = json_result.get("stade", "").strip()
