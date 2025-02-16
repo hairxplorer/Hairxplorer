@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# Au démarrage, si la variable GOOGLE_CREDENTIALS_JSON est définie, on crée un fichier temporaire pour Google Vision.
+# Au démarrage, si la variable GOOGLE_CREDENTIALS_JSON est définie, créer un fichier temporaire pour Google Vision.
 if "GOOGLE_CREDENTIALS_JSON" in os.environ:
     credentials_file = "/tmp/google_credentials.json"
     with open(credentials_file, "w") as f:
@@ -10,7 +10,6 @@ if "GOOGLE_CREDENTIALS_JSON" in os.environ:
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_file
 
 import json
-import re
 import smtplib
 import base64
 from email.mime.text import MIMEText
@@ -198,35 +197,23 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
-# Fonction d'analyse avec Google Vision et mapping sur l'échelle Norwood
-def analyze_image_with_vision(image_bytes: bytes):
+# Analyse d'une image individuelle via Google Vision pour obtenir le score de "bald"
+def analyze_single_image(image_bytes: bytes) -> float:
     client = vision.ImageAnnotatorClient()
     image = vision.Image(content=image_bytes)
     response = client.label_detection(image=image)
     labels = response.label_annotations
-
-    # Récupérer les labels et scores en minuscules
     label_scores = {label.description.lower(): label.score for label in labels}
-    print("DEBUG: Labels détectés et scores:", label_scores)
-    
-    # On cherche des indices liés à la perte de cheveux à partir de mots-clés
+    print("DEBUG: Labels individuels et scores:", label_scores)
     keywords = ["bald", "baldness", "hair loss", "thinning"]
-    bald_score = 0
+    score = 0
     for keyword in keywords:
         if keyword in label_scores:
-            bald_score = max(bald_score, label_scores[keyword])
-    print("DEBUG: Bald score:", bald_score)
-    
-    # Mapping heuristique basé sur les seuils définis pour l'échelle Norwood.
-    # Ces seuils et descriptions sont inspirés de la documentation :
-    # - Stade 1 : Aucun signe de calvitie.
-    # - Stade 2 : Légère perte sur la ligne frontale (ligne mature) et parfois une légère perte au vertex.
-    # - Stade 3 : Perte cliniquement significative, avec dégarnissement des golfes temporaux (ou stade 3 vertex).
-    # - Stade 4 : Perte importante de la ligne frontale, mais avec une bande reliant les côtés.
-    # - Stade 5 : Perte avancée avec élargissement des zones dégarnies et amincissement de la bande.
-    # - Stade 6 : Perte très avancée avec disparition presque totale de la zone centrale, seule une fine couronne subsiste.
-    # - Stade 7 : Calvitie totale sur le sommet, cheveux uniquement sur les côtés et l'arrière.
-    
+            score = max(score, label_scores[keyword])
+    return score
+
+# Mapping du score maximal sur l'échelle Norwood (1 à 7)
+def map_bald_score_to_norwood(bald_score: float) -> dict:
     if bald_score < 0.05:
         stage = "1"
         details = ("Aucun signe visible de calvitie ou de dégarnissement au niveau de la ligne frontale. "
@@ -269,7 +256,6 @@ def analyze_image_with_vision(image_bytes: bytes):
                    "les côtés et l'arrière, caractéristique du Norwood 7.")
         evaluation = "Perte maximale, restauration capillaire complexe."
         price_range = "4000-5000€"
-    
     return {
         "stade": stage,
         "price_range": price_range,
@@ -311,25 +297,24 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-        # Redimensionner chaque image à 512x512 pour conserver le maximum de détails
-        images = [
-            Image.open(BytesIO(await file.read())).resize((512, 512))
-            for file in [front, top, side, back]
-        ]
-        # Combiner les images dans une grille de 1024x1024
-        grid = Image.new('RGB', (1024, 1024))
-        grid.paste(images[0], (0, 0))
-        grid.paste(images[1], (512, 0))
-        grid.paste(images[2], (0, 512))
-        grid.paste(images[3], (512, 512))
-        buffered = BytesIO()
-        # Sauvegarder avec une qualité élevée (85) pour préserver les détails
-        grid.save(buffered, format="JPEG", quality=85)
-        image_bytes = buffered.getvalue()
-
-        # Analyse de l'image via Google Vision
-        json_result = analyze_image_with_vision(image_bytes)
-        print("DEBUG: Résultat Vision =", json_result)
+        # Pour chaque image, redimensionner à 512x512 pour obtenir suffisamment de détails
+        files = [front, top, side, back]
+        bald_scores = []
+        for file in files:
+            img = Image.open(BytesIO(await file.read())).resize((512, 512))
+            buffered = BytesIO()
+            img.save(buffered, format="JPEG", quality=85)
+            image_bytes = buffered.getvalue()
+            score = analyze_single_image(image_bytes)
+            bald_scores.append(score)
+            print("DEBUG: Bald score pour une image :", score)
+        
+        max_bald_score = max(bald_scores) if bald_scores else 0
+        print("DEBUG: Bald score maximal:", max_bald_score)
+        
+        # Obtenir le mapping final sur l'échelle Norwood
+        json_result = map_bald_score_to_norwood(max_bald_score)
+        print("DEBUG: Résultat final =", json_result)
 
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
