@@ -256,7 +256,7 @@ async def analyze(
                     }
                 ],
                 max_tokens=500,  # Augmentation du nombre de tokens pour plus de détails
-                temperature=0.3  # Baisse de la température pour une réponse plus précise
+                temperature=0.1  # Baisse de la température pour une réponse plus précise
             )
 
             raw_response = response.choices[0].message.content
