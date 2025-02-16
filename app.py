@@ -238,23 +238,27 @@ async def analyze(
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         try:
             response = await client.chat.completions.create(
-                model="gpt-4o-mini",  # Utilisation d'un modèle textuel
+                model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "user",
                         "content": (
-                            "Provide a strictly JSON response without any extra commentary. "
-                            "The response must be exactly in the following format, without mentioning treatment or surgery:\n"
-                            "{\"stade\": \"<Norwood stage number>\", "
-                            "\"price_range\": \"<pricing based on configuration>\", "
-                            "\"details\": \"<detailed analysis description>\", "
-                            "\"evaluation\": \"<precise evaluation on the Norwood scale>\"}\n\n"
-                            "Note: The following is the base64 encoded image: " + b64_image
+                            "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
+                            "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
+                            "{\"stade\": \"<numéro du stade Norwood>\", "
+                            "\"price_range\": \"<fourchette tarifaire basée sur la configuration>\", "
+                            "\"details\": \"<description détaillée de l'analyse>\", "
+                            "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
+                            "Faites une analyse précise de l'image en intégrant tous les éléments visibles. "
+                            "Soyez exhaustif dans la description du stade de calvitie et justifiez le choix de la fourchette tarifaire. "
+                            "Voici l'image encodée en base64 : " + b64_image
                         )
                     }
                 ],
-                max_tokens=300
+                max_tokens=500,  # Augmentation du nombre de tokens pour plus de détails
+                temperature=0.3  # Baisse de la température pour une réponse plus précise
             )
+
             raw_response = response.choices[0].message.content
             print("DEBUG: OpenAI Response =", raw_response)
             match = re.search(r'\{.*\}', raw_response, re.DOTALL)
