@@ -354,7 +354,7 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db:  psycop
     except Exception as e:
         print("DEBUG: Exception in update_config:", e) #On affiche l'exception
 raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
-      finally:
+    finally:
             db.close()
 
     # Nouvelle route pour réinitialiser le quota
