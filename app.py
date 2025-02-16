@@ -198,7 +198,7 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
-# Fonction d'analyse avec Google Vision et évaluation sur l'échelle Norwood
+# Fonction d'analyse avec Google Vision et mapping sur l'échelle Norwood
 def analyze_image_with_vision(image_bytes: bytes):
     client = vision.ImageAnnotatorClient()
     image = vision.Image(content=image_bytes)
@@ -209,7 +209,7 @@ def analyze_image_with_vision(image_bytes: bytes):
     label_scores = {label.description.lower(): label.score for label in labels}
     print("DEBUG: Labels détectés et scores:", label_scores)
     
-    # On cherche des indices liés à la perte de cheveux
+    # On cherche des indices liés à la perte de cheveux à partir de mots-clés
     keywords = ["bald", "baldness", "hair loss", "thinning"]
     bald_score = 0
     for keyword in keywords:
@@ -217,36 +217,58 @@ def analyze_image_with_vision(image_bytes: bytes):
             bald_score = max(bald_score, label_scores[keyword])
     print("DEBUG: Bald score:", bald_score)
     
-    # Mapping heuristique du score sur l'échelle Norwood (3 à 7)
-    if bald_score >= 0.8:
-        stage = "7"
-        details = ("Analyse très avancée : perte quasi totale de cheveux sur le sommet et la ligne frontale, "
-                   "seule une mince couronne résiduelle est présente, caractéristique du Norwood 7.")
-        evaluation = "Presque absence de cheveux sur le haut de la tête, perte maximale."
-        price_range = "4000-5000€"
-    elif bald_score >= 0.65:
-        stage = "6"
-        details = ("Perte de cheveux très avancée, avec des zones dégarnies importantes sur le sommet et la ligne frontale, "
-                   "correspondant au Norwood 6.")
-        evaluation = "Dégarnissement marqué, seule une couronne résiduelle subsiste."
-        price_range = "3000-4000€"
-    elif bald_score >= 0.45:
-        stage = "5"
-        details = ("Perte de cheveux avancée, où l’amincissement du sommet et la récession frontale sont significatifs, "
-                   "correspondant au Norwood 5.")
-        evaluation = "Perte notable sur le haut, transition progressive vers une zone dégarnie."
-        price_range = "2500-3500€"
-    elif bald_score >= 0.25:
-        stage = "4"
-        details = ("Début de perte de cheveux avancée avec amincissement notable du sommet et légère récession frontale, "
-                   "caractéristique du Norwood 4.")
-        evaluation = "Amincissement modéré, perte visible mais encore conservatrice."
-        price_range = "2000-3000€"
-    else:
+    # Mapping heuristique basé sur les seuils définis pour l'échelle Norwood.
+    # Ces seuils et descriptions sont inspirés de la documentation :
+    # - Stade 1 : Aucun signe de calvitie.
+    # - Stade 2 : Légère perte sur la ligne frontale (ligne mature) et parfois une légère perte au vertex.
+    # - Stade 3 : Perte cliniquement significative, avec dégarnissement des golfes temporaux (ou stade 3 vertex).
+    # - Stade 4 : Perte importante de la ligne frontale, mais avec une bande reliant les côtés.
+    # - Stade 5 : Perte avancée avec élargissement des zones dégarnies et amincissement de la bande.
+    # - Stade 6 : Perte très avancée avec disparition presque totale de la zone centrale, seule une fine couronne subsiste.
+    # - Stade 7 : Calvitie totale sur le sommet, cheveux uniquement sur les côtés et l'arrière.
+    
+    if bald_score < 0.05:
+        stage = "1"
+        details = ("Aucun signe visible de calvitie ou de dégarnissement au niveau de la ligne frontale. "
+                   "Stade de contrôle, aucun traitement ni greffe généralement recommandé.")
+        evaluation = "Aucun indice de perte de cheveux."
+        price_range = "0€"
+    elif bald_score < 0.1:
+        stage = "2"
+        details = ("Légère perte de cheveux sur la ligne frontale, parfois appelée ligne mature. "
+                   "Une perte minime au vertex peut être présente.")
+        evaluation = "Perte très légère, traitements médicamenteux possibles pour ralentir la progression."
+        price_range = "0-1000€"
+    elif bald_score < 0.2:
         stage = "3"
-        details = ("Perte de cheveux modérée avec amincissement localisé sur le sommet, typique du Norwood 3.")
-        evaluation = "Amincissement initial, densité encore globalement préservée."
+        details = ("Perte de cheveux cliniquement significative, caractérisée par un dégarnissement des golfes temporaux "
+                   "et parfois du vertex (stade 3 vertex).")
+        evaluation = "Perte notable sur le haut, intervention chirurgicale peu recommandée."
         price_range = "1500-2500€"
+    elif bald_score < 0.3:
+        stage = "4"
+        details = ("Progression importante du dégarnissement de la ligne frontale avec une bande de cheveux reliant les côtés. "
+                   "Indique une perte avancée nécessitant éventuellement un traitement chirurgical ultérieur.")
+        evaluation = "Amincissement modéré avec perte visible."
+        price_range = "2000-3000€"
+    elif bald_score < 0.45:
+        stage = "5"
+        details = ("Perte de cheveux avancée, caractérisée par un élargissement des zones dégarnies et un amincissement progressif "
+                   "de la bande capillaire, correspondant au Norwood 5.")
+        evaluation = "Perte notable sur le haut, greffe de cheveux envisageable."
+        price_range = "2500-3500€"
+    elif bald_score < 0.6:
+        stage = "6"
+        details = ("Perte de cheveux très avancée, avec disparition quasi totale de la zone centrale (sommet et ligne frontale), "
+                   "ne laissant qu'une fine couronne résiduelle, caractéristique du Norwood 6.")
+        evaluation = "Dégarnissement marqué, intervention chirurgicale fortement recommandée."
+        price_range = "3000-4000€"
+    else:
+        stage = "7"
+        details = ("Calvitie masculine la plus avancée : perte quasi totale sur le sommet, avec des cheveux présents uniquement sur "
+                   "les côtés et l'arrière, caractéristique du Norwood 7.")
+        evaluation = "Perte maximale, restauration capillaire complexe."
+        price_range = "4000-5000€"
     
     return {
         "stade": stage,
@@ -289,7 +311,7 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-        # Redimensionner chaque image à 512x512 pour plus de détails
+        # Redimensionner chaque image à 512x512 pour conserver le maximum de détails
         images = [
             Image.open(BytesIO(await file.read())).resize((512, 512))
             for file in [front, top, side, back]
@@ -300,9 +322,8 @@ async def analyze(
         grid.paste(images[1], (512, 0))
         grid.paste(images[2], (0, 512))
         grid.paste(images[3], (512, 512))
-
         buffered = BytesIO()
-        # Qualité 85 pour préserver davantage de détails
+        # Sauvegarder avec une qualité élevée (85) pour préserver les détails
         grid.save(buffered, format="JPEG", quality=85)
         image_bytes = buffered.getvalue()
 
@@ -378,7 +399,6 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: psycopg
             cursor.close()
             print("DEBUG: Insert query executed and changes committed.")
         return {"status": "success"}
-
     except Exception as e:
         print("DEBUG: Exception in update_config:", e)
         raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
@@ -394,7 +414,6 @@ async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db: 
         raise HTTPException(status_code=404, detail="Clinic not found")
 
     update_clinic_quota(db, api_key, clinic_config["default_quota"])
-
     return {"status": "success", "message": f"Quota for clinic {api_key} reset to {clinic_config['default_quota']}"}
 
 @app.on_event("startup")
