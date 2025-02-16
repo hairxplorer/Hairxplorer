@@ -1,34 +1,34 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
-  <title>Admin Dashboard - Clinics</title>
+    <meta charset="UTF-8">
+    <title>Admin Dashboard - Clinics</title>
 </head>
 <body>
-  <h1>Dashboard des Cliniques</h1>
-  <table border="1">
-    <thead>
-      <tr>
-        <th>API Key</th>
-        <th>Email Clinique</th>
-        <th>Pricing</th>
-        <th>Quota restant</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      <?php foreach ($clinics as $clinic): ?>
-      <tr>
-        <td><?php echo esc_html($clinic['api_key']); ?></td>
-        <td><?php echo esc_html($clinic['email_clinique']); ?></td>
-        <td><pre><?php echo esc_html(json_encode($clinic['pricing'], JSON_PRETTY_PRINT)); ?></pre></td>
-        <td><?php echo esc_html($clinic['analysis_quota']); ?></td>
-        <td><a href="/admin/edit/<?php echo esc_attr($clinic['api_key']); ?>">Modifier</a></td>
-      </tr>
-      <?php endforeach; ?>
-    </tbody>
-  </table>
-  <br>
-  <a href="/admin/analyses">Voir les analyses</a>
+    <h1>Dashboard des Cliniques</h1>
+    <table border="1">
+        <thead>
+            <tr>
+                <th>API Key</th>
+                <th>Email Clinique</th>
+                <th>Pricing</th>
+                <th>Quota restant</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for clinic in clinics %}
+            <tr>
+                <td>{{ clinic.api_key }}</td>
+                <td>{{ clinic.email_clinique }}</td>
+                <td><pre>{{ clinic.pricing | tojson(indent=2) }}</pre></td>
+                <td>{{ clinic.analysis_quota }}</td>
+                <td><a href="/admin/edit/{{ clinic.api_key }}">Modifier</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <br>
+    <a href="/admin/analyses">Voir les analyses</a>
 </body>
 </html>
