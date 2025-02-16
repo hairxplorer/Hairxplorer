@@ -121,7 +121,6 @@ def update_clinic_quota(db: psycopg2.extensions.connection, api_key: str, new_qu
             else:
                 cursor.execute("UPDATE clinics SET analysis_quota = %s WHERE api_key = %s", (new_quota, api_key))
 
-
 def _send_email(to_email: str, subject: str, body: str):
     try:
         smtp_config = SMTPConfig()
@@ -187,6 +186,7 @@ async def analyze(
         print("DEBUG: api_key =", api_key)
         print("DEBUG: client_email =", client_email)
         print("DEBUG: consent =", consent)
+
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
 
