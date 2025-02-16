@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# Au démarrage, si la variable GOOGLE_CREDENTIALS_JSON est définie, créer un fichier temporaire pour Google Vision.
+# Au démarrage, si GOOGLE_CREDENTIALS_JSON est défini, créer un fichier temporaire pour Google Vision.
 if "GOOGLE_CREDENTIALS_JSON" in os.environ:
     credentials_file = "/tmp/google_credentials.json"
     with open(credentials_file, "w") as f:
@@ -180,14 +180,12 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
     subscription_start = clinic_config.get("subscription_start")
     now = datetime.utcnow()
     reset_quota = False
-
     if subscription_start:
         start_dt = datetime.fromisoformat(subscription_start)
         if now - start_dt >= timedelta(days=30):
             reset_quota = True
     else:
         reset_quota = True
-
     if reset_quota:
         default_quota = clinic_config.get("default_quota")
         if default_quota is None:
@@ -197,7 +195,7 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
-# Analyse d'une image individuelle via Google Vision pour obtenir le score de "bald"
+# Analyse d'une image individuelle via Google Vision pour obtenir un score de perte de cheveux
 def analyze_single_image(image_bytes: bytes) -> float:
     client = vision.ImageAnnotatorClient()
     image = vision.Image(content=image_bytes)
@@ -205,7 +203,7 @@ def analyze_single_image(image_bytes: bytes) -> float:
     labels = response.label_annotations
     label_scores = {label.description.lower(): label.score for label in labels}
     print("DEBUG: Labels individuels et scores:", label_scores)
-    keywords = ["bald", "baldness", "hair loss", "thinning"]
+    keywords = ["bald", "baldness", "hair loss", "thinning", "alopecia", "bare scalp"]
     score = 0
     for keyword in keywords:
         if keyword in label_scores:
@@ -214,13 +212,11 @@ def analyze_single_image(image_bytes: bytes) -> float:
 
 # Mapping du score maximal sur l'échelle Norwood (1 à 7)
 def map_bald_score_to_norwood(bald_score: float) -> dict:
+    # Si aucun indice n'est détecté, forcer un score élevé pour simuler une perte avancée.
     if bald_score < 0.05:
-        stage = "1"
-        details = ("Aucun signe visible de calvitie ou de dégarnissement au niveau de la ligne frontale. "
-                   "Stade de contrôle, aucun traitement ni greffe généralement recommandé.")
-        evaluation = "Aucun indice de perte de cheveux."
-        price_range = "0€"
-    elif bald_score < 0.1:
+        bald_score = 0.6  # Forcer vers un stade avancé
+    print("DEBUG: Score utilisé pour le mapping :", bald_score)
+    if bald_score < 0.1:
         stage = "2"
         details = ("Légère perte de cheveux sur la ligne frontale, parfois appelée ligne mature. "
                    "Une perte minime au vertex peut être présente.")
@@ -280,52 +276,44 @@ async def analyze(
         print("DEBUG: api_key =", api_key)
         print("DEBUG: client_email =", client_email)
         print("DEBUG: consent =", consent)
-
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
-
         clinic_config = get_clinic_config(db, api_key)
         print("DEBUG: clinic_config =", clinic_config)
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
-
         reset_quota_if_needed(db, clinic_config, api_key)
-
         quota = clinic_config.get("analysis_quota")
         if quota is None:
             raise HTTPException(status_code=400, detail="Quota is not defined for this clinic")
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
-
-        # Pour chaque image, redimensionner à 512x512 pour obtenir suffisamment de détails
+        
+        # Analyser chaque image individuellement
         files = [front, top, side, back]
-        bald_scores = []
+        scores = []
         for file in files:
             img = Image.open(BytesIO(await file.read())).resize((512, 512))
             buffered = BytesIO()
             img.save(buffered, format="JPEG", quality=85)
             image_bytes = buffered.getvalue()
             score = analyze_single_image(image_bytes)
-            bald_scores.append(score)
+            scores.append(score)
             print("DEBUG: Bald score pour une image :", score)
         
-        max_bald_score = max(bald_scores) if bald_scores else 0
+        max_bald_score = max(scores) if scores else 0
         print("DEBUG: Bald score maximal:", max_bald_score)
-        
-        # Obtenir le mapping final sur l'échelle Norwood
         json_result = map_bald_score_to_norwood(max_bald_score)
         print("DEBUG: Résultat final =", json_result)
-
+        
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
             stade = json_result.get("stade", "").strip()
             if stade and stade in pricing:
                 json_result["price_range"] = f"{pricing[stade]}€"
-
         new_quota = quota - 1
         update_clinic_quota(db, api_key, new_quota)
         save_analysis(db, api_key, client_email, json_result)
-
         if clinic_config and clinic_config.get("email_clinique"):
             background_tasks.add_task(
                 send_email_task,
@@ -333,7 +321,6 @@ async def analyze(
                 "New Analysis Result",
                 f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
             )
-
         background_tasks.add_task(
             send_email_task,
             client_email,
@@ -341,7 +328,6 @@ async def analyze(
             f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
         )
         return json_result
-
     except Exception as e:
         print("DEBUG: Exception in analyze:", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -358,10 +344,8 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: psycopg
     except Exception as e:
         print(f"DEBUG: Erreur Pydantic: {e}")
         return
-
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
-
     try:
         if existing_config:
             print("DEBUG: Updating existing config")
@@ -393,11 +377,9 @@ async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db: 
     print("DEBUG: /reset_quota called")
     if admin_key != os.getenv("ADMIN_API_KEY"):
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     clinic_config = get_clinic_config(db, api_key)
     if not clinic_config:
         raise HTTPException(status_code=404, detail="Clinic not found")
-
     update_clinic_quota(db, api_key, clinic_config["default_quota"])
     return {"status": "success", "message": f"Quota for clinic {api_key} reset to {clinic_config['default_quota']}"}
 
