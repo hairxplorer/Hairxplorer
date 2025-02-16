@@ -238,7 +238,7 @@ async def analyze(
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         try:
             response = await client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "user",
