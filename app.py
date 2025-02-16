@@ -106,10 +106,7 @@ async def get_db():
 def get_clinic_config(db: psycopg2.extensions.connection, api_key: str):
     print(f"DEBUG: get_clinic_config called with api_key: {api_key}")
     with db.cursor(cursor_factory=DictCursor) as cursor:
-        cursor.execute(
-            "SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", 
-            (api_key,)
-        )
+        cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", (api_key,))
         row = cursor.fetchone()
     print(f"DEBUG: get_clinic_config, row: {row}")
     if row:
@@ -124,19 +121,33 @@ def get_clinic_config(db: psycopg2.extensions.connection, api_key: str):
     return None
 
 def update_clinic_quota(db: psycopg2.extensions.connection, api_key: str, new_quota: int, new_subscription_start: str = None):
-    print(f"DEBUG: update_clinic_quota called with api_key: {api_key}, new_quota: {new_quota}, new_subscription_start: {new_subscription_start}")
-    with db:
-        with db.cursor() as cursor:
-            if new_subscription_start:
-                cursor.execute(
-                    "UPDATE clinics SET analysis_quota = %s, subscription_start = %s WHERE api_key = %s", 
-                    (new_quota, new_subscription_start, api_key)
-                )
-            else:
-                cursor.execute(
-                    "UPDATE clinics SET analysis_quota = %s WHERE api_key = %s", 
-                    (new_quota, api_key)
-                )
+    cursor = db.cursor()
+    try:
+        if new_subscription_start:
+            cursor.execute(
+                "UPDATE clinics SET analysis_quota = %s, subscription_start = %s WHERE api_key = %s",
+                (new_quota, new_subscription_start, api_key)
+            )
+        else:
+            cursor.execute(
+                "UPDATE clinics SET analysis_quota = %s WHERE api_key = %s",
+                (new_quota, api_key)
+            )
+        db.commit()
+    finally:
+        cursor.close()
+
+def save_analysis(db: psycopg2.extensions.connection, api_key: str, client_email: str, result: dict):
+    timestamp = datetime.utcnow().isoformat()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (%s, %s, %s, %s)",
+            (api_key, client_email, json.dumps(result), timestamp)
+        )
+        db.commit()
+    finally:
+        cursor.close()
 
 def _send_email(to_email: str, subject: str, body: str):
     try:
@@ -172,20 +183,10 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         default_quota = clinic_config.get("default_quota")
         if default_quota is None:
             raise HTTPException(status_code=400, detail="Default quota is not defined for this clinic.")
-        with db:
-            update_clinic_quota(db, api_key, default_quota, now.isoformat())
+        update_clinic_quota(db, api_key, default_quota, now.isoformat())
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
-
-def save_analysis(db: psycopg2.extensions.connection, api_key: str, client_email: str, result: dict):
-    timestamp = datetime.utcnow().isoformat()
-    with db:
-        with db.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (%s, %s, %s, %s)",
-                (api_key, client_email, json.dumps(result), timestamp)
-            )
 
 @app.post("/analyze")
 async def analyze(
@@ -237,24 +238,19 @@ async def analyze(
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         try:
             response = await client.chat.completions.create(
-                model="gpt-4o-mini",  # Utilisation d'un modèle valide
+                model="gpt-4",  # Utilisation d'un modèle textuel
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "text", "text": (
-                                "Provide a strictly JSON response without any extra commentary. "
-                                "The response must be exactly in the following format, without mentioning treatment or surgery:\n"
-                                "{\"stade\": \"<Norwood stage number>\", "
-                                "\"price_range\": \"<pricing based on configuration>\", "
-                                "\"details\": \"<detailed analysis description>\", "
-                                "\"evaluation\": \"<precise evaluation on the Norwood scale>\"}"
-                            )},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
-                            }
-                        ]
+                        "content": (
+                            "Provide a strictly JSON response without any extra commentary. "
+                            "The response must be exactly in the following format, without mentioning treatment or surgery:\n"
+                            "{\"stade\": \"<Norwood stage number>\", "
+                            "\"price_range\": \"<pricing based on configuration>\", "
+                            "\"details\": \"<detailed analysis description>\", "
+                            "\"evaluation\": \"<precise evaluation on the Norwood scale>\"}\n\n"
+                            "Note: The following is the base64 encoded image: " + b64_image
+                        )
                     }
                 ],
                 max_tokens=300
@@ -277,8 +273,7 @@ async def analyze(
 
             new_quota = quota - 1
             update_clinic_quota(db, api_key, new_quota)
-            with db:
-                save_analysis(db, api_key, client_email, json_result)
+            save_analysis(db, api_key, client_email, json_result)
 
             if clinic_config and clinic_config.get("email_clinique"):
                 background_tasks.add_task(
@@ -323,26 +318,24 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: psycopg
     try:
         if existing_config:
             print("DEBUG: Updating existing config")
-            with db:
-                cursor = db.cursor()
-                cursor.execute(
-                    "UPDATE clinics SET email_clinique = %s, pricing = %s WHERE api_key = %s",
-                    (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
-                )
-                print("DEBUG: Update query executed.")
-                db.commit()
-                print("DEBUG: Changes committed.")
+            cursor = db.cursor()
+            cursor.execute(
+                "UPDATE clinics SET email_clinique = %s, pricing = %s WHERE api_key = %s",
+                (config_data.email, json.dumps(config_data.pricing), config_data.api_key)
+            )
+            db.commit()
+            cursor.close()
+            print("DEBUG: Update query executed and changes committed.")
         else:
             print("DEBUG: Creating new config")
-            with db:
-                cursor = db.cursor()
-                cursor.execute(
-                    "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 10, 10, datetime.utcnow().isoformat())
-                )
-                print("DEBUG: Insert query executed.")
-                db.commit()
-                print("DEBUG: Changes committed.")
+            cursor = db.cursor()
+            cursor.execute(
+                "INSERT INTO clinics (api_key, email_clinique, pricing, analysis_quota, default_quota, subscription_start) VALUES (%s, %s, %s, %s, %s, %s)",
+                (config_data.api_key, config_data.email, json.dumps(config_data.pricing), 10, 10, datetime.utcnow().isoformat())
+            )
+            db.commit()
+            cursor.close()
+            print("DEBUG: Insert query executed and changes committed.")
         return {"status": "success"}
 
     except Exception as e:
@@ -359,8 +352,7 @@ async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db: 
     if not clinic_config:
         raise HTTPException(status_code=404, detail="Clinic not found")
 
-    with db:
-        update_clinic_quota(db, api_key, clinic_config["default_quota"])
+    update_clinic_quota(db, api_key, clinic_config["default_quota"])
 
     return {"status": "success", "message": f"Quota for clinic {api_key} reset to {clinic_config['default_quota']}"}
 
