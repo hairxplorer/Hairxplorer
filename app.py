@@ -1,4 +1,15 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
+# Au démarrage, si la variable GOOGLE_CREDENTIALS_JSON est définie dans Railway,
+# écrire son contenu dans un fichier temporaire et définir GOOGLE_APPLICATION_CREDENTIALS.
+if "GOOGLE_CREDENTIALS_JSON" in os.environ:
+    credentials_file = "/tmp/google_credentials.json"
+    with open(credentials_file, "w") as f:
+        f.write(os.environ["GOOGLE_CREDENTIALS_JSON"])
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_file
+
 import json
 import re
 import smtplib
@@ -14,10 +25,7 @@ from PIL import Image
 from io import BytesIO
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict
-from dotenv import load_dotenv
 from google.cloud import vision
-
-load_dotenv()
 
 app = FastAPI()
 
@@ -191,19 +199,19 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
-# Nouvelle fonction utilisant Google Vision pour analyser l'image
+# Fonction d'analyse via Google Vision
 def analyze_image_with_vision(image_bytes: bytes):
     client = vision.ImageAnnotatorClient()
     image = vision.Image(content=image_bytes)
     response = client.label_detection(image=image)
     labels = response.label_annotations
     label_descriptions = [label.description.lower() for label in labels]
-    # Log simple pour vérification
     print("DEBUG: Labels détectés :", label_descriptions)
-    # Logique simplifiée : si "bald" ou "baldness" est détecté, on considère un stade avancé (6), sinon un stade moins avancé (3)
+    
+    # Logique d'analyse simplifiée basée sur les labels
     if "bald" in label_descriptions or "baldness" in label_descriptions:
         stage = "6"
-        details = "Les résultats de l'analyse indiquent une perte de cheveux très avancée avec zones dégarnies étendues, correspondant au Norwood 6."
+        details = "Les résultats indiquent une perte de cheveux très avancée avec zones dégarnies étendues, correspondant au Norwood 6."
         evaluation = "Zone frontale et sommet fortement dégarnis, seule une couronne résiduelle subsiste."
         price_range = "3000-4000€"
     else:
@@ -252,27 +260,25 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-        # Ici, on analyse chaque image individuellement ou on peut créer une grille.
-        # Pour simplifier, on combine les 4 images dans une grille.
+        # Redimensionner chaque image à 256x256 pour réduire la taille
         images = [
             Image.open(BytesIO(await file.read())).resize((256, 256))
             for file in [front, top, side, back]
         ]
+        # Combiner les images dans une grille de 512x512
         grid = Image.new('RGB', (512, 512))
         grid.paste(images[0], (0, 0))
         grid.paste(images[1], (256, 0))
         grid.paste(images[2], (0, 256))
         grid.paste(images[3], (256, 256))
         buffered = BytesIO()
-        # Réduire la qualité pour limiter le nombre de tokens tout en conservant suffisamment d'information
         grid.save(buffered, format="JPEG", quality=60)
         image_bytes = buffered.getvalue()
 
-        # Appel à l'API Google Vision pour analyser l'image
+        # Analyse de l'image via Google Vision
         json_result = analyze_image_with_vision(image_bytes)
         print("DEBUG: Résultat Vision =", json_result)
 
-        # Optionnel : si la configuration de la clinique définit une tarification différente, vous pouvez la surcharger ici.
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
             stade = json_result.get("stade", "").strip()
