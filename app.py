@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import json
 import re
 import smtplib
@@ -53,8 +54,10 @@ def get_db_connection():
             user=os.getenv("PGUSER"),
             password=os.getenv("PGPASSWORD")
         )
+        print("DEBUG: Successfully connected to PostgreSQL")
         return conn
     except psycopg2.OperationalError as e:
+        print(f"DEBUG: Erreur de connexion à PostgreSQL : {e}")
         raise HTTPException(status_code=500, detail=f"Database connection error: {e}")
 
 def init_db(db: psycopg2.extensions.connection):
@@ -70,6 +73,7 @@ def init_db(db: psycopg2.extensions.connection):
                     subscription_start TEXT
                 )
             ''')
+            print("DEBUG: Table 'clinics' créée ou vérifiée.")
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS analyses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +84,7 @@ def init_db(db: psycopg2.extensions.connection):
                     FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
                 )
             ''')
+            print("DEBUG: Table 'analyses' créée ou vérifiée.")
 
 async def get_db():
     db = get_db_connection()
@@ -110,18 +115,17 @@ def update_clinic_quota(db: psycopg2.extensions.connection, api_key: str, new_qu
             else:
                 cursor.execute("UPDATE clinics SET analysis_quota = %s WHERE api_key = %s", (new_quota, api_key))
 
-
 def _send_email(to_email: str, subject: str, body: str):
     try:
-      smtp_config = SMTPConfig()
-      msg = MIMEText(body, "plain", "utf-8")
-      msg["Subject"] = subject
-      msg["From"] = smtp_config.user
-      msg["To"] = to_email
-      with smtplib.SMTP(smtp_config.server, smtp_config.port) as server:
-          server.starttls()
-          server.login(smtp_config.user, smtp_config.password)
-          server.sendmail(smtp_config.user, [to_email], msg.as_string())
+        smtp_config = SMTPConfig()
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = smtp_config.user
+        msg["To"] = to_email
+        with smtplib.SMTP(smtp_config.server, smtp_config.port) as server:
+            server.starttls()
+            server.login(smtp_config.user, smtp_config.password)
+            server.sendmail(smtp_config.user, [to_email], msg.as_string())
     except Exception as e:
         print(f"Error sending email: {e}")
 
@@ -152,11 +156,11 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
 def save_analysis(db: psycopg2.extensions.connection, api_key: str, client_email: str, result: dict):
     timestamp = datetime.utcnow().isoformat()
     with db:
-        with db.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (%s, %s, %s, %s)",
-                (api_key, client_email, json.dumps(result), timestamp)
-            )
+      with db.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (%s, %s, %s, %s)",
+            (api_key, client_email, json.dumps(result), timestamp)
+        )
 @app.post("/analyze")
 async def analyze(
     background_tasks: BackgroundTasks,
@@ -170,10 +174,16 @@ async def analyze(
     , db:  psycopg2.extensions.connection = Depends(get_db)
 ):
     try:
+        print("DEBUG: /analyze called")
+        print("DEBUG: api_key =", api_key)
+        print("DEBUG: client_email =", client_email)
+        print("DEBUG: consent =", consent)
+
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
 
         clinic_config = get_clinic_config(db, api_key)
+        print("DEBUG: clinic_config =", clinic_config)
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
 
@@ -225,12 +235,15 @@ async def analyze(
                 max_tokens=300
             )
             raw_response = response.choices[0].message.content
+            print("DEBUG: OpenAI Response =", raw_response)
             match = re.search(r'\{.*\}', raw_response, re.DOTALL)
             if not match:
                 raise HTTPException(status_code=500, detail="Invalid response from OpenAI: No JSON found.")
             json_str = match.group(0)
+            print("DEBUG: Extracted JSON =", json_str)
 
             json_result = json.loads(json_str)
+
 
             if clinic_config and "pricing" in clinic_config:
                 pricing = clinic_config["pricing"]
