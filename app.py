@@ -290,8 +290,7 @@ async def analyze(
         except Exception as e:
             print("DEBUG: Exception in analyze:", e)
             raise HTTPException(status_code=500, detail=str(e))
-
-
+            
 @app.get("/")
 def health_check():
     return {"status": "online"}
