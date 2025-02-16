@@ -1,8 +1,9 @@
 fastapi
-uvicorn
-openai
+uvicorn[standard]
 python-multipart
+openai
 pillow
 python-dotenv
-jinja2
 pydantic[email]
+Jinja2
+psycopg2-binary
