@@ -289,26 +289,27 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-        # Redimensionner chaque image à 256x256 pour réduire la taille
+        # Redimensionner chaque image à 512x512 pour plus de détails
         images = [
-            Image.open(BytesIO(await file.read())).resize((256, 256))
+            Image.open(BytesIO(await file.read())).resize((512, 512))
             for file in [front, top, side, back]
         ]
-        # Combiner les images dans une grille de 512x512
-        grid = Image.new('RGB', (512, 512))
+        # Combiner les images dans une grille de 1024x1024
+        grid = Image.new('RGB', (1024, 1024))
         grid.paste(images[0], (0, 0))
-        grid.paste(images[1], (256, 0))
-        grid.paste(images[2], (0, 256))
-        grid.paste(images[3], (256, 256))
+        grid.paste(images[1], (512, 0))
+        grid.paste(images[2], (0, 512))
+        grid.paste(images[3], (512, 512))
+
         buffered = BytesIO()
-        grid.save(buffered, format="JPEG", quality=60)
+        # Qualité 85 pour préserver davantage de détails
+        grid.save(buffered, format="JPEG", quality=85)
         image_bytes = buffered.getvalue()
 
         # Analyse de l'image via Google Vision
         json_result = analyze_image_with_vision(image_bytes)
         print("DEBUG: Résultat Vision =", json_result)
 
-        # Si la configuration de la clinique définit une tarification spécifique, on peut la surcharger.
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
             stade = json_result.get("stade", "").strip()
