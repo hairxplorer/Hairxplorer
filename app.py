@@ -59,8 +59,9 @@ def get_db_connection():
         raise HTTPException(status_code=500, detail=f"Missing environment variable: {e}")
 
 def init_db(db: psycopg2.extensions.connection):
-    with db:
-        with db.cursor() as cursor:
+    """Initialise la base de données (crée les tables)."""
+    with db: # with pour transaction
+        with db.cursor() as cursor: # with pour le curseur
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS clinics (
                     api_key TEXT PRIMARY KEY,
@@ -74,7 +75,7 @@ def init_db(db: psycopg2.extensions.connection):
             print("DEBUG: Table 'clinics' créée ou vérifiée.")
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS analyses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,          
                     clinic_api_key TEXT,
                     client_email TEXT,
                     result TEXT,
