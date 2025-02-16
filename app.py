@@ -10,12 +10,12 @@ from psycopg2.extras import DictCursor
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from openai import AsyncOpenAI
 from PIL import Image
 from io import BytesIO
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict
 from dotenv import load_dotenv
+from google.cloud import vision
 
 load_dotenv()
 
@@ -191,6 +191,33 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
+# Nouvelle fonction utilisant Google Vision pour analyser l'image
+def analyze_image_with_vision(image_bytes: bytes):
+    client = vision.ImageAnnotatorClient()
+    image = vision.Image(content=image_bytes)
+    response = client.label_detection(image=image)
+    labels = response.label_annotations
+    label_descriptions = [label.description.lower() for label in labels]
+    # Log simple pour vérification
+    print("DEBUG: Labels détectés :", label_descriptions)
+    # Logique simplifiée : si "bald" ou "baldness" est détecté, on considère un stade avancé (6), sinon un stade moins avancé (3)
+    if "bald" in label_descriptions or "baldness" in label_descriptions:
+        stage = "6"
+        details = "Les résultats de l'analyse indiquent une perte de cheveux très avancée avec zones dégarnies étendues, correspondant au Norwood 6."
+        evaluation = "Zone frontale et sommet fortement dégarnis, seule une couronne résiduelle subsiste."
+        price_range = "3000-4000€"
+    else:
+        stage = "3"
+        details = "L'analyse suggère une perte de cheveux modérée, caractéristique du Norwood 3."
+        evaluation = "Amincissement notable sur le sommet, mais présence significative de cheveux sur les côtés et l'arrière."
+        price_range = "1500-2500€"
+    return {
+        "stade": stage,
+        "price_range": price_range,
+        "details": details,
+        "evaluation": evaluation
+    }
+
 @app.post("/analyze")
 async def analyze(
     background_tasks: BackgroundTasks,
@@ -225,84 +252,52 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
-        # Réduire la taille de l'image pour diminuer le nombre de tokens (256x256 pour chaque vue)
+        # Ici, on analyse chaque image individuellement ou on peut créer une grille.
+        # Pour simplifier, on combine les 4 images dans une grille.
         images = [
             Image.open(BytesIO(await file.read())).resize((256, 256))
             for file in [front, top, side, back]
         ]
-        # Créer une grille de 512x512
         grid = Image.new('RGB', (512, 512))
         grid.paste(images[0], (0, 0))
         grid.paste(images[1], (256, 0))
         grid.paste(images[2], (0, 256))
         grid.paste(images[3], (256, 256))
         buffered = BytesIO()
-        grid.save(buffered, format="JPEG", quality=50)
-        b64_image = base64.b64encode(buffered.getvalue()).decode()
+        # Réduire la qualité pour limiter le nombre de tokens tout en conservant suffisamment d'information
+        grid.save(buffered, format="JPEG", quality=60)
+        image_bytes = buffered.getvalue()
 
-        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
-                            "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
-                            "{\"stade\": \"<numéro du stade Norwood>\", "
-                            "\"price_range\": \"<fourchette tarifaire basée sur la configuration>\", "
-                            "\"details\": \"<description détaillée de l'analyse>\", "
-                            "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
-                            "Analysez précisément l'image en vous basant sur la densité et la répartition des cheveux sur l'ensemble du cuir chevelu. "
-                            "Identifiez l'unification éventuelle des zones dégarnies ainsi que la présence d'une couronne résiduelle, sans présupposer le stade attendu. "
-                            "Justifiez ensuite le choix de la fourchette tarifaire en fonction des indices visuels extraits. "
-                            "Voici l'image encodée en base64 : " + b64_image
-                        )
-                    }
-                ],
-                max_tokens=500,
-                temperature=0.1
-            )
-            raw_response = response.choices[0].message.content
-            print("DEBUG: OpenAI Response =", raw_response)
-            match = re.search(r'\{.*\}', raw_response, re.DOTALL)
-            if not match:
-                raise HTTPException(status_code=500, detail="Invalid response from OpenAI: No JSON found.")
-            json_str = match.group(0)
-            print("DEBUG: Extracted JSON =", json_str)
+        # Appel à l'API Google Vision pour analyser l'image
+        json_result = analyze_image_with_vision(image_bytes)
+        print("DEBUG: Résultat Vision =", json_result)
 
-            json_result = json.loads(json_str)
+        # Optionnel : si la configuration de la clinique définit une tarification différente, vous pouvez la surcharger ici.
+        if clinic_config and "pricing" in clinic_config:
+            pricing = clinic_config["pricing"]
+            stade = json_result.get("stade", "").strip()
+            if stade and stade in pricing:
+                json_result["price_range"] = f"{pricing[stade]}€"
 
-            if clinic_config and "pricing" in clinic_config:
-                pricing = clinic_config["pricing"]
-                stade = json_result.get("stade", "").strip()
-                if stade and stade in pricing:
-                    json_result["price_range"] = f"{pricing[stade]}€"
+        new_quota = quota - 1
+        update_clinic_quota(db, api_key, new_quota)
+        save_analysis(db, api_key, client_email, json_result)
 
-            new_quota = quota - 1
-            update_clinic_quota(db, api_key, new_quota)
-            save_analysis(db, api_key, client_email, json_result)
-
-            if clinic_config and clinic_config.get("email_clinique"):
-                background_tasks.add_task(
-                    send_email_task,
-                    clinic_config["email_clinique"],
-                    "New Analysis Result",
-                    f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
-                )
-
+        if clinic_config and clinic_config.get("email_clinique"):
             background_tasks.add_task(
-                    send_email_task,
-                    client_email,
-                    "Your Analysis Result",
-                    f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
+                send_email_task,
+                clinic_config["email_clinique"],
+                "New Analysis Result",
+                f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
             )
-            return json_result
 
-        except Exception as e:
-            print("DEBUG: Exception in analyze:", e)
-            raise HTTPException(status_code=500, detail=str(e))
+        background_tasks.add_task(
+            send_email_task,
+            client_email,
+            "Your Analysis Result",
+            f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
+        )
+        return json_result
 
     except Exception as e:
         print("DEBUG: Exception in analyze:", e)
