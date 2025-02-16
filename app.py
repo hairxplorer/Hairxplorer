@@ -4,9 +4,8 @@ import re
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
-
-import psycopg2  # IMPORTANT: psycopg2 pour PostgreSQL
-from psycopg2.extras import DictCursor  # Pour avoir des résultats en dictionnaires
+import psycopg2
+from psycopg2.extras import DictCursor
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Body, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -32,99 +31,77 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# --- Modèles Pydantic ---
 class SMTPConfig(BaseModel):
     server: str = Field(..., env="SMTP_SERVER")
     port: int = Field(..., env="SMTP_PORT")
     user: EmailStr = Field(..., env="SMTP_USER")
     password: str = Field(..., env="SMTP_PASSWORD")
 
-# On a plus besoin de ce modele
-# class AnalysisRequest(BaseModel):
-#     api_key: str
-#     client_email: EmailStr
-#     consent: bool
-
-#On a plus besoin de ce modele pour le moment
-# class AnalysisResult(BaseModel):  # On garde pour le parsing de la réponse OpenAI
-#     stade: str
-#     price_range: Optional[str] = None
-#     details: str
-#     evaluation: str
-
-class ClinicConfigUpdate(BaseModel):  # Utiliser pour /update-config
+class ClinicConfigUpdate(BaseModel):
     api_key: str
     email: Optional[EmailStr] = None
     smtp: Optional[SMTPConfig] = None
     pricing: Dict[str, int] = {}
     button_color: str = "#0000ff"
 
-# --- Fonctions utilitaires ---
-# Plus besoin de chemin de fichier local, car la BDD est gérée par Railway
-
-
 def get_db_connection():
-    """Crée une nouvelle connexion à la base de données PostgreSQL."""
     try:
-        # Connexion en utilisant les variables d'environnement de Railway.
         conn = psycopg2.connect(
             host=os.getenv("PGHOST"),
-            port=os.getenv("PGPORT", 5432),  # 5432 est le port par défaut
+            port=os.getenv("PGPORT", 5432),
             database=os.getenv("PGDATABASE"),
             user=os.getenv("PGUSER"),
             password=os.getenv("PGPASSWORD")
         )
-        print("DEBUG: Successfully connected to PostgreSQL")  # DEBUG
-        return conn  # Retourne la *connexion*, PAS un curseur
+        print("DEBUG: Successfully connected to PostgreSQL")
+        return conn
     except psycopg2.OperationalError as e:
         print(f"DEBUG: Erreur de connexion à PostgreSQL : {e}")
         raise HTTPException(status_code=500, detail=f"Database connection error: {e}")
-    except KeyError as e: #Ajout gestion erreur KeyError
+    except KeyError as e:
         print(f"DEBUG: Manque une variable d'environement: {e}")
         raise HTTPException(status_code=500, detail=f"Missing environment variable: {e}")
 
 def init_db(db: psycopg2.extensions.connection):
-    """Initialise la base de données (crée les tables)."""
-    with db: # with pour transaction
-      with db.cursor() as cursor: #On utilise un context manager pour le curseur
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS clinics (
-                api_key TEXT PRIMARY KEY,
-                email_clinique TEXT,
-                pricing TEXT,
-                analysis_quota INTEGER DEFAULT 0,
-                default_quota INTEGER DEFAULT 0,
-                subscription_start TEXT
-            )
-        ''')
-        print("DEBUG: Table 'clinics' créée ou vérifiée.")  # DEBUG
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS analyses (
-                id INTEGER PRIMARY KEY SERIAL,
-                clinic_api_key TEXT,
-                client_email TEXT,
-                result TEXT,
-                timestamp TEXT,
-                FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
-            )
-        ''')
-        print("DEBUG: Table 'analyses' créée ou vérifiée.")  # DEBUG
+    with db:
+        with db.cursor() as cursor:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS clinics (
+                    api_key TEXT PRIMARY KEY,
+                    email_clinique TEXT,
+                    pricing TEXT,
+                    analysis_quota INTEGER DEFAULT 0,
+                    default_quota INTEGER DEFAULT 0,
+                    subscription_start TEXT
+                )
+            ''')
+            print("DEBUG: Table 'clinics' créée ou vérifiée.")
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS analyses (
+                    id INTEGER PRIMARY KEY SERIAL,
+                    clinic_api_key TEXT,
+                    client_email TEXT,
+                    result TEXT,
+                    timestamp TEXT,
+                    FOREIGN KEY(clinic_api_key) REFERENCES clinics(api_key)
+                )
+            ''')
+            print("DEBUG: Table 'analyses' créée ou vérifiée.")
 
-async def get_db(): #Fonction pour FastAPI
+async def get_db():
     db = get_db_connection()
     try:
-        yield db  # "Donne" la connexion à la fonction qui utilise le Depends (analyze, update_config)
+        yield db
     finally:
-        db.close() # *Très* important de fermer la connexion
+        db.close()
 
 def get_clinic_config(db: psycopg2.extensions.connection, api_key: str):
-    """Récupère la configuration d'une clinique."""
-    #On utilise DictCursor pour récuperer les données sous forme de dictionnaire
+    print(f"DEBUG: get_clinic_config called with api_key: {api_key}")
     with db.cursor(cursor_factory=DictCursor) as cursor:
-      cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", (api_key,)) # syntaxe psycopg2
+      cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", (api_key,))
       row = cursor.fetchone()
+    print(f"DEBUG: get_clinic_config, row: {row}")
     if row:
-      #row est un dictionnaire grace a DictCursor
       return {
             "email_clinique": row['email_clinique'],
             "pricing": json.loads(row['pricing']) if row['pricing'] else {},
@@ -132,22 +109,22 @@ def get_clinic_config(db: psycopg2.extensions.connection, api_key: str):
             "default_quota": row['default_quota'],
             "subscription_start": row['subscription_start']
         }
+    print("DEBUG: Clinique non trouvée")
     return None
 
 def update_clinic_quota(db: psycopg2.extensions.connection, api_key: str, new_quota: int, new_subscription_start: str = None):
-    """Met à jour le quota et/ou la date de souscription."""
-    with db: # with pour transaction
-      with db.cursor() as cursor:
-        if new_subscription_start:
-            cursor.execute("UPDATE clinics SET analysis_quota = %s, subscription_start = %s WHERE api_key = %s", (new_quota, new_subscription_start, api_key))# syntaxe psycopg2
-        else:
-            cursor.execute("UPDATE clinics SET analysis_quota = %s WHERE api_key = %s", (new_quota, api_key))# syntaxe psycopg2
+    print(f"DEBUG: update_clinic_quota called with api_key: {api_key}, new_quota: {new_quota}, new_subscription_start: {new_subscription_start}")
+    with db:
+        with db.cursor() as cursor:
+            if new_subscription_start:
+                cursor.execute("UPDATE clinics SET analysis_quota = %s, subscription_start = %s WHERE api_key = %s", (new_quota, new_subscription_start, api_key))
+            else:
+                cursor.execute("UPDATE clinics SET analysis_quota = %s WHERE api_key = %s", (new_quota, api_key))
 
 
 def _send_email(to_email: str, subject: str, body: str):
-    """Fonction interne pour envoyer un e-mail (ne pas exposer directement)."""
     try:
-      smtp_config = SMTPConfig.from_env()
+      smtp_config = SMTPConfig()
       msg = MIMEText(body, "plain", "utf-8")
       msg["Subject"] = subject
       msg["From"] = smtp_config.user
@@ -158,14 +135,12 @@ def _send_email(to_email: str, subject: str, body: str):
           server.sendmail(smtp_config.user, [to_email], msg.as_string())
     except Exception as e:
         print(f"Error sending email: {e}")
-        # Gérer l'erreur (journaliser, réessayer, etc.)
 
 def send_email_task(to_email: str, subject: str, body: str):
-    """Tâche en arrière-plan pour envoyer un e-mail."""
     _send_email(to_email, subject, body)
 
 def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dict, api_key: str):
-    """Réinitialise le quota si nécessaire."""
+    print(f"DEBUG: reset_quota_if_needed called with clinic_config: {clinic_config}, api_key: {api_key}")
     subscription_start = clinic_config.get("subscription_start")
     now = datetime.utcnow()
     reset_quota = False
@@ -181,24 +156,20 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         default_quota = clinic_config.get("default_quota")
         if default_quota is None:
             raise HTTPException(status_code=400, detail="Default quota is not defined for this clinic.")
-        with db:  # with pour transaction
+        with db:
             update_clinic_quota(db, api_key, default_quota, now.isoformat())
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
 def save_analysis(db: psycopg2.extensions.connection, api_key: str, client_email: str, result: dict):
-    """Enregistre une analyse."""
     timestamp = datetime.utcnow().isoformat()
-    with db: # with pour transaction
-      with db.cursor() as cursor:
-        cursor.execute(
-            "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (%s, %s, %s, %s)",
-            (api_key, client_email, json.dumps(result), timestamp) # Syntaxe psycopg2
-        )
-
-# --- Routes FastAPI ---
-
+    with db:
+        with db.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO analyses (clinic_api_key, client_email, result, timestamp) VALUES (%s, %s, %s, %s)",
+                (api_key, client_email, json.dumps(result), timestamp)
+            )
 @app.post("/analyze")
 async def analyze(
     background_tasks: BackgroundTasks,
@@ -365,9 +336,8 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db:  psycop
         db.close()
 
 @app.post("/reset_quota")
-async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db: psycopg2.extensions.connection = Depends(get_db)):
+async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db:  psycopg2.extensions.connection = Depends(get_db)):
     print("DEBUG: /reset_quota called")
-    # Vérification de la clé administrateur
     if admin_key != os.getenv("ADMIN_API_KEY"):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -380,7 +350,6 @@ async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db: 
 
     return {"status": "success", "message": f"Quota for clinic {api_key} reset to {clinic_config['default_quota']}"}
 
-# Initialisation de la base de données au démarrage de l'application
 @app.on_event("startup")
 async def on_startup():
     db = get_db_connection()
