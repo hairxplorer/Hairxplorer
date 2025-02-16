@@ -83,8 +83,9 @@ async def update_clinic(api_key: str, request: Request, db=Depends(get_db)):
             raise HTTPException(status_code=400, detail="Le champ Pricing doit être un JSON valide.")
         try:
             cursor = db.cursor()
-            with db:
-                cursor.execute("UPDATE clinics SET email_clinique = %s, pricing = %s WHERE api_key = %s", (email_clinique, pricing_json, api_key))
+            cursor.execute("UPDATE clinics SET email_clinique = %s, pricing = %s WHERE api_key = %s", (email_clinique, pricing_json, api_key))
+            db.commit()
+            cursor.close()
             url = request.url_for("admin_dashboard")
             return RedirectResponse(url=url, status_code=303)
         except Exception as e:
