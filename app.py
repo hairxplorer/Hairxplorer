@@ -45,14 +45,10 @@ class ClinicConfigUpdate(BaseModel):
     button_color: str = "#0000ff"
 
 def get_db_connection():
+    """Crée une nouvelle connexion à la base de données PostgreSQL."""
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("PGHOST"),
-            port=os.getenv("PGPORT", 5432),
-            database=os.getenv("PGDATABASE"),
-            user=os.getenv("PGUSER"),
-            password=os.getenv("PGPASSWORD")
-        )
+        # Utilisez la variable d'environnement DATABASE_URL fournie par Railway
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
         print("DEBUG: Successfully connected to PostgreSQL")
         return conn
     except psycopg2.OperationalError as e:
