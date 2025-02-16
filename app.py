@@ -249,8 +249,8 @@ async def analyze(
                             "\"price_range\": \"<fourchette tarifaire basée sur la configuration>\", "
                             "\"details\": \"<description détaillée de l'analyse>\", "
                             "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
-                            "Faites une analyse précise de l'image en intégrant tous les éléments visibles. "
-                            "Soyez exhaustif dans la description du stade de calvitie et justifiez le choix de la fourchette tarifaire. "
+                            "Analysez précisément l'image en vous basant sur la densité et la répartition des cheveux sur l'ensemble du cuir chevelu. "
+                            "Identifiez l'unification éventuelle des zones dégarnies ainsi que la présence d'une couronne résiduelle, sans présupposer le stade attendu. "
                             "Voici l'image encodée en base64 : " + b64_image
                         )
                     }
