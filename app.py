@@ -291,8 +291,6 @@ async def analyze(
             print("DEBUG: Exception in analyze:", e)
             raise HTTPException(status_code=500, detail=str(e))
 
-    finally:
-        db.close()
 
 @app.get("/")
 def health_check():
