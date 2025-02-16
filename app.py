@@ -106,7 +106,10 @@ async def get_db():
 def get_clinic_config(db: psycopg2.extensions.connection, api_key: str):
     print(f"DEBUG: get_clinic_config called with api_key: {api_key}")
     with db.cursor(cursor_factory=DictCursor) as cursor:
-        cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", (api_key,))
+        cursor.execute(
+            "SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", 
+            (api_key,)
+        )
         row = cursor.fetchone()
     print(f"DEBUG: get_clinic_config, row: {row}")
     if row:
@@ -222,23 +225,25 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
 
+        # Réduire la taille de l'image pour diminuer le nombre de tokens (256x256 pour chaque vue)
         images = [
-            Image.open(BytesIO(await file.read())).resize((512, 512))
+            Image.open(BytesIO(await file.read())).resize((256, 256))
             for file in [front, top, side, back]
         ]
-        grid = Image.new('RGB', (1024, 1024))
+        # Créer une grille de 512x512
+        grid = Image.new('RGB', (512, 512))
         grid.paste(images[0], (0, 0))
-        grid.paste(images[1], (512, 0))
-        grid.paste(images[2], (0, 512))
-        grid.paste(images[3], (512, 512))
+        grid.paste(images[1], (256, 0))
+        grid.paste(images[2], (0, 256))
+        grid.paste(images[3], (256, 256))
         buffered = BytesIO()
-        grid.save(buffered, format="JPEG", quality=75)
+        grid.save(buffered, format="JPEG", quality=50)
         b64_image = base64.b64encode(buffered.getvalue()).decode()
 
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         try:
             response = await client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "user",
@@ -251,14 +256,14 @@ async def analyze(
                             "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
                             "Analysez précisément l'image en vous basant sur la densité et la répartition des cheveux sur l'ensemble du cuir chevelu. "
                             "Identifiez l'unification éventuelle des zones dégarnies ainsi que la présence d'une couronne résiduelle, sans présupposer le stade attendu. "
+                            "Justifiez ensuite le choix de la fourchette tarifaire en fonction des indices visuels extraits. "
                             "Voici l'image encodée en base64 : " + b64_image
                         )
                     }
                 ],
-                max_tokens=500,  # Augmentation du nombre de tokens pour plus de détails
-                temperature=0.1  # Baisse de la température pour une réponse plus précise
+                max_tokens=500,
+                temperature=0.1
             )
-
             raw_response = response.choices[0].message.content
             print("DEBUG: OpenAI Response =", raw_response)
             match = re.search(r'\{.*\}', raw_response, re.DOTALL)
@@ -288,10 +293,10 @@ async def analyze(
                 )
 
             background_tasks.add_task(
-                send_email_task,
-                client_email,
-                "Your Analysis Result",
-                f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
+                    send_email_task,
+                    client_email,
+                    "Your Analysis Result",
+                    f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
             )
             return json_result
 
