@@ -106,7 +106,10 @@ async def get_db():
 def get_clinic_config(db: psycopg2.extensions.connection, api_key: str):
     print(f"DEBUG: get_clinic_config called with api_key: {api_key}")
     with db.cursor(cursor_factory=DictCursor) as cursor:
-        cursor.execute("SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", (api_key,))
+        cursor.execute(
+            "SELECT email_clinique, pricing, analysis_quota, default_quota, subscription_start FROM clinics WHERE api_key = %s", 
+            (api_key,)
+        )
         row = cursor.fetchone()
     print(f"DEBUG: get_clinic_config, row: {row}")
     if row:
@@ -125,9 +128,15 @@ def update_clinic_quota(db: psycopg2.extensions.connection, api_key: str, new_qu
     with db:
         with db.cursor() as cursor:
             if new_subscription_start:
-                cursor.execute("UPDATE clinics SET analysis_quota = %s, subscription_start = %s WHERE api_key = %s", (new_quota, new_subscription_start, api_key))
+                cursor.execute(
+                    "UPDATE clinics SET analysis_quota = %s, subscription_start = %s WHERE api_key = %s", 
+                    (new_quota, new_subscription_start, api_key)
+                )
             else:
-                cursor.execute("UPDATE clinics SET analysis_quota = %s WHERE api_key = %s", (new_quota, api_key))
+                cursor.execute(
+                    "UPDATE clinics SET analysis_quota = %s WHERE api_key = %s", 
+                    (new_quota, api_key)
+                )
 
 def _send_email(to_email: str, subject: str, body: str):
     try:
@@ -228,7 +237,7 @@ async def analyze(
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         try:
             response = await client.chat.completions.create(
-                model="gpt-4-turbo",
+                model="gpt-4",  # Utilisation d'un modèle valide
                 messages=[
                     {
                         "role": "user",
@@ -290,7 +299,11 @@ async def analyze(
         except Exception as e:
             print("DEBUG: Exception in analyze:", e)
             raise HTTPException(status_code=500, detail=str(e))
-            
+
+    except Exception as e:
+        print("DEBUG: Exception in analyze:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/")
 def health_check():
     return {"status": "online"}
@@ -335,8 +348,6 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: psycopg
     except Exception as e:
         print("DEBUG: Exception in update_config:", e)
         raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
-    finally:
-        db.close()
 
 @app.post("/reset_quota")
 async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db: psycopg2.extensions.connection = Depends(get_db)):
