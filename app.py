@@ -212,11 +212,14 @@ def analyze_single_image(image_bytes: bytes) -> float:
 
 # Mapping du score maximal sur l'échelle Norwood (1 à 7)
 def map_bald_score_to_norwood(bald_score: float) -> dict:
-    # Si aucun indice n'est détecté, forcer un score élevé pour simuler une perte avancée.
-    if bald_score < 0.05:
-        bald_score = 0.6  # Forcer vers un stade avancé
     print("DEBUG: Score utilisé pour le mapping :", bald_score)
-    if bald_score < 0.1:
+    if bald_score < 0.05:
+        stage = "1"
+        details = ("Aucun signe visible de calvitie ou de dégarnissement au niveau de la ligne frontale. "
+                   "Stade de contrôle, aucun traitement ni greffe généralement recommandé.")
+        evaluation = "Aucun indice de perte de cheveux."
+        price_range = "0€"
+    elif bald_score < 0.1:
         stage = "2"
         details = ("Légère perte de cheveux sur la ligne frontale, parfois appelée ligne mature. "
                    "Une perte minime au vertex peut être présente.")
@@ -289,7 +292,7 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
         
-        # Analyser chaque image individuellement
+        # Analyse chaque image individuellement
         files = [front, top, side, back]
         scores = []
         for file in files:
@@ -311,9 +314,11 @@ async def analyze(
             stade = json_result.get("stade", "").strip()
             if stade and stade in pricing:
                 json_result["price_range"] = f"{pricing[stade]}€"
+        
         new_quota = quota - 1
         update_clinic_quota(db, api_key, new_quota)
         save_analysis(db, api_key, client_email, json_result)
+        
         if clinic_config and clinic_config.get("email_clinique"):
             background_tasks.add_task(
                 send_email_task,
@@ -321,6 +326,7 @@ async def analyze(
                 "New Analysis Result",
                 f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
             )
+        
         background_tasks.add_task(
             send_email_task,
             client_email,
