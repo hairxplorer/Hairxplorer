@@ -2,8 +2,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# Pour OpenAI, on utilise la variable OPENAI_API_KEY définie dans les variables d'environnement.
-
 import json
 import smtplib
 import base64
@@ -192,12 +190,12 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
 
 # Fonction pour analyser une image individuelle via GPT-4o-mini
 async def analyze_image_with_openai(file: UploadFile, label: str, client_instance: AsyncOpenAI) -> dict:
-    # Redimensionner l'image à 512x512 pour conserver les détails
+    # Redimensionner l'image à 512x512
     img = Image.open(BytesIO(await file.read())).resize((512, 512))
     buffered = BytesIO()
     img.save(buffered, format="JPEG", quality=85)
     b64_image = base64.b64encode(buffered.getvalue()).decode()
-
+    
     prompt = (
         "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
         "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
@@ -208,14 +206,22 @@ async def analyze_image_with_openai(file: UploadFile, label: str, client_instanc
         "Analysez précisément l'image (vue : " + label + ") en vous basant sur la répartition et la densité des cheveux. "
         "Voici l'image encodée en base64 : " + b64_image
     )
-
+    
     response = await client_instance.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=300,
         temperature=0.1
     )
-    return json.loads(response.choices[0].message.content)
+    
+    raw_content = response.choices[0].message.content.strip()
+    print("DEBUG: Raw response for", label, ":", raw_content)
+    if not raw_content:
+        raise Exception("La réponse du modèle est vide pour " + label)
+    try:
+        return json.loads(raw_content)
+    except json.JSONDecodeError as e:
+        raise Exception(f"Erreur lors du parsing JSON pour {label}: {e} -- Contenu brut: {raw_content}")
 
 @app.post("/analyze")
 async def analyze(
@@ -236,10 +242,12 @@ async def analyze(
         print("DEBUG: consent =", consent)
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
+        
         clinic_config = get_clinic_config(db, api_key)
         print("DEBUG: clinic_config =", clinic_config)
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
+        
         reset_quota_if_needed(db, clinic_config, api_key)
         quota = clinic_config.get("analysis_quota")
         if quota is None:
@@ -256,13 +264,11 @@ async def analyze(
             results[view_label] = result
             print(f"DEBUG: Résultat pour {view_label} :", result)
         
-        # On renvoie directement les résultats individuels sans agrégation
         final_result = results
         print("DEBUG: Final result =", final_result)
         
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
-            # Vous pouvez éventuellement ajuster la tarification ici en fonction de chaque vue
             for view in final_result:
                 stage = final_result[view].get("stade", "").strip()
                 if stage and stage in pricing:
@@ -286,7 +292,6 @@ async def analyze(
             f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(final_result, indent=2)}\n\nThank you for your trust."
         )
         return final_result
-
     except Exception as e:
         print("DEBUG: Exception in analyze:", e)
         raise HTTPException(status_code=500, detail=str(e))
