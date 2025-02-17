@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import json
+import re
 import smtplib
 import base64
 from email.mime.text import MIMEText
@@ -190,12 +191,12 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
 
 # Fonction pour analyser une image individuelle via GPT-4o-mini
 async def analyze_image_with_openai(file: UploadFile, label: str, client_instance: AsyncOpenAI) -> dict:
-    # Redimensionner l'image à 512x512
+    # Redimensionner l'image à 512x512 pour conserver les détails
     img = Image.open(BytesIO(await file.read())).resize((512, 512))
     buffered = BytesIO()
     img.save(buffered, format="JPEG", quality=85)
     b64_image = base64.b64encode(buffered.getvalue()).decode()
-    
+
     prompt = (
         "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
         "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
@@ -206,16 +207,18 @@ async def analyze_image_with_openai(file: UploadFile, label: str, client_instanc
         "Analysez précisément l'image (vue : " + label + ") en vous basant sur la répartition et la densité des cheveux. "
         "Voici l'image encodée en base64 : " + b64_image
     )
-    
+
     response = await client_instance.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=300,
         temperature=0.1
     )
-    
     raw_content = response.choices[0].message.content.strip()
     print("DEBUG: Raw response for", label, ":", raw_content)
+    # Nettoyer les marqueurs markdown s'ils sont présents
+    raw_content = re.sub(r"^```(?:json)?\n", "", raw_content)
+    raw_content = re.sub(r"\n```$", "", raw_content)
     if not raw_content:
         raise Exception("La réponse du modèle est vide pour " + label)
     try:
