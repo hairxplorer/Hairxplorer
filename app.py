@@ -197,26 +197,31 @@ async def analyze_image_with_openai(file: UploadFile, label: str, client_instanc
     img.save(buffered, format="JPEG", quality=85)
     b64_image = base64.b64encode(buffered.getvalue()).decode()
 
+    # Prompt enrichi avec les informations de l'échelle Hamilton-Norwood
     prompt = (
-        "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
-        "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
-        "{\"stade\": \"<numéro du stade Norwood>\", "
-        "\"price_range\": \"<fourchette tarifaire basée sur la configuration>\", "
-        "\"details\": \"<description détaillée de l'analyse>\", "
-        "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
-        "Analysez précisément l'image (vue : " + label + ") en vous basant sur la répartition et la densité des cheveux. "
+        "Vous êtes un expert en restauration capillaire. Utilisez l'échelle de Hamilton-Norwood suivante pour évaluer la perte de cheveux chez un homme :\n\n"
+        "Stade 1: Aucun signe visible de calvitie ou de dégarnissement.\n"
+        "Stade 2: Légère perte sur la ligne frontale (ligne mature) et éventuellement une légère perte au vertex.\n"
+        "Stade 3: Perte cliniquement significative avec dégarnissement des golfes temporaux et/ou du vertex (stade 3 vertex).\n"
+        "Stade 4: Perte importante de la ligne frontale, avec une bande de cheveux reliant les côtés.\n"
+        "Stade 5: Calvitie avancée, avec élargissement des zones dégarnies et amincissement de la bande.\n"
+        "Stade 6: Perte très avancée, avec disparition quasi totale de la zone centrale (des tempes au vertex) et une fine couronne résiduelle.\n"
+        "Stade 7: Calvitie totale sur le sommet, avec cheveux uniquement sur les côtés et l'arrière.\n\n"
+        "Fournissez une réponse strictement au format JSON sans aucun commentaire supplémentaire, sous le format :\n"
+        "{\"stade\": \"<numéro du stade Norwood>\", \"price_range\": \"<fourchette tarifaire>\", \"details\": \"<description détaillée>\", \"evaluation\": \"<évaluation précise>\"}\n\n"
+        "Analysez l'image (vue : " + label + ") en vous basant sur la répartition et la densité des cheveux. "
         "Voici l'image encodée en base64 : " + b64_image
     )
 
     response = await client_instance.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=300,
+        max_tokens=500,
         temperature=0.1
     )
     raw_content = response.choices[0].message.content.strip()
     print("DEBUG: Raw response for", label, ":", raw_content)
-    # Nettoyer les marqueurs markdown s'ils sont présents
+    # Nettoyage des éventuels marqueurs markdown
     raw_content = re.sub(r"^```(?:json)?\n", "", raw_content)
     raw_content = re.sub(r"\n```$", "", raw_content)
     if not raw_content:
