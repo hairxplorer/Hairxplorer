@@ -2,12 +2,9 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# Au démarrage, si GOOGLE_CREDENTIALS_JSON est défini, créer un fichier temporaire pour Google Vision.
-if "GOOGLE_CREDENTIALS_JSON" in os.environ:
-    credentials_file = "/tmp/google_credentials.json"
-    with open(credentials_file, "w") as f:
-        f.write(os.environ["GOOGLE_CREDENTIALS_JSON"])
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_file
+# Au démarrage, on vérifie si GOOGLE_CREDENTIALS_JSON est défini (pour Google Vision) – ici non utilisé.
+# Pour OpenAI, on utilise la variable OPENAI_API_KEY directement.
+# Vous devez définir OPENAI_API_KEY dans vos variables d'environnement.
 
 import json
 import smtplib
@@ -23,7 +20,7 @@ from PIL import Image
 from io import BytesIO
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict
-from google.cloud import vision
+from openai import AsyncOpenAI  # Utilisation de GPT-4o-mini via OpenAI
 
 app = FastAPI()
 
@@ -195,72 +192,33 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
 
-# Analyse d'une image individuelle via Google Vision pour obtenir un score de perte de cheveux
-def analyze_single_image(image_bytes: bytes) -> float:
-    client = vision.ImageAnnotatorClient()
-    image = vision.Image(content=image_bytes)
-    response = client.label_detection(image=image)
-    labels = response.label_annotations
-    label_scores = {label.description.lower(): label.score for label in labels}
-    print("DEBUG: Labels individuels et scores:", label_scores)
-    keywords = ["bald", "baldness", "hair loss", "thinning", "alopecia", "bare scalp"]
-    score = 0
-    for keyword in keywords:
-        if keyword in label_scores:
-            score = max(score, label_scores[keyword])
-    return score
+# Fonction pour analyser une image individuelle via GPT-4o-mini
+async def analyze_image_with_openai(file: UploadFile, label: str, client_instance: AsyncOpenAI) -> dict:
+    # Redimensionner l'image à 512x512 pour conserver les détails
+    img = Image.open(BytesIO(await file.read())).resize((512, 512))
+    buffered = BytesIO()
+    img.save(buffered, format="JPEG", quality=85)
+    b64_image = base64.b64encode(buffered.getvalue()).decode()
 
-# Mapping du score maximal sur l'échelle Norwood (1 à 7)
-def map_bald_score_to_norwood(bald_score: float) -> dict:
-    print("DEBUG: Score utilisé pour le mapping :", bald_score)
-    if bald_score < 0.05:
-        stage = "1"
-        details = ("Aucun signe visible de calvitie ou de dégarnissement au niveau de la ligne frontale. "
-                   "Stade de contrôle, aucun traitement ni greffe généralement recommandé.")
-        evaluation = "Aucun indice de perte de cheveux."
-        price_range = "0€"
-    elif bald_score < 0.1:
-        stage = "2"
-        details = ("Légère perte de cheveux sur la ligne frontale, parfois appelée ligne mature. "
-                   "Une perte minime au vertex peut être présente.")
-        evaluation = "Perte très légère, traitements médicamenteux possibles pour ralentir la progression."
-        price_range = "0-1000€"
-    elif bald_score < 0.2:
-        stage = "3"
-        details = ("Perte de cheveux cliniquement significative, caractérisée par un dégarnissement des golfes temporaux "
-                   "et parfois du vertex (stade 3 vertex).")
-        evaluation = "Perte notable sur le haut, intervention chirurgicale peu recommandée."
-        price_range = "1500-2500€"
-    elif bald_score < 0.3:
-        stage = "4"
-        details = ("Progression importante du dégarnissement de la ligne frontale avec une bande de cheveux reliant les côtés. "
-                   "Indique une perte avancée nécessitant éventuellement un traitement chirurgical ultérieur.")
-        evaluation = "Amincissement modéré avec perte visible."
-        price_range = "2000-3000€"
-    elif bald_score < 0.45:
-        stage = "5"
-        details = ("Perte de cheveux avancée, caractérisée par un élargissement des zones dégarnies et un amincissement progressif "
-                   "de la bande capillaire, correspondant au Norwood 5.")
-        evaluation = "Perte notable sur le haut, greffe de cheveux envisageable."
-        price_range = "2500-3500€"
-    elif bald_score < 0.6:
-        stage = "6"
-        details = ("Perte de cheveux très avancée, avec disparition quasi totale de la zone centrale (sommet et ligne frontale), "
-                   "ne laissant qu'une fine couronne résiduelle, caractéristique du Norwood 6.")
-        evaluation = "Dégarnissement marqué, intervention chirurgicale fortement recommandée."
-        price_range = "3000-4000€"
-    else:
-        stage = "7"
-        details = ("Calvitie masculine la plus avancée : perte quasi totale sur le sommet, avec des cheveux présents uniquement sur "
-                   "les côtés et l'arrière, caractéristique du Norwood 7.")
-        evaluation = "Perte maximale, restauration capillaire complexe."
-        price_range = "4000-5000€"
-    return {
-        "stade": stage,
-        "price_range": price_range,
-        "details": details,
-        "evaluation": evaluation
-    }
+    prompt = (
+        "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
+        "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
+        "{\"stade\": \"<numéro du stade Norwood>\", "
+        "\"price_range\": \"<fourchette tarifaire basée sur la configuration>\", "
+        "\"details\": \"<description détaillée de l'analyse>\", "
+        "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
+        "Analysez précisément l'image (angle: " + label + ") en vous basant sur la répartition des cheveux et la qualité de l'image. "
+        "Voici l'image encodée en base64 : " + b64_image
+    )
+
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=300,
+        temperature=0.1
+    )
+    # On suppose que la réponse est bien au format JSON
+    return json.loads(response.choices[0].message.content)
 
 @app.post("/analyze")
 async def analyze(
@@ -292,48 +250,55 @@ async def analyze(
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
         
-        # Analyse chaque image individuellement
-        files = [front, top, side, back]
-        scores = []
-        for file in files:
-            img = Image.open(BytesIO(await file.read())).resize((512, 512))
-            buffered = BytesIO()
-            img.save(buffered, format="JPEG", quality=85)
-            image_bytes = buffered.getvalue()
-            score = analyze_single_image(image_bytes)
-            scores.append(score)
-            print("DEBUG: Bald score pour une image :", score)
+        # Analyse individuelle des images
+        client_instance = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        views = {"front": front, "top": top, "side": side, "back": back}
+        results = {}
+        for view_label, file in views.items():
+            result = await analyze_image_with_openai(file, view_label, client_instance)
+            results[view_label] = result
+            print(f"DEBUG: Résultat pour {view_label} :", result)
         
-        max_bald_score = max(scores) if scores else 0
-        print("DEBUG: Bald score maximal:", max_bald_score)
-        json_result = map_bald_score_to_norwood(max_bald_score)
-        print("DEBUG: Résultat final =", json_result)
+        # Agréger le stade en prenant le maximum des stades détectés
+        try:
+            stages = [int(results[view]["stade"]) for view in results if results[view].get("stade").isdigit()]
+            aggregated_stage = str(max(stages)) if stages else "N/A"
+        except Exception as e:
+            aggregated_stage = "N/A"
+        aggregated = {
+            "stade": aggregated_stage,
+            "details": "Analyse agrégée basée sur les vues individuelles.",
+            "evaluation": "Le stade final est basé sur la vue avec le plus fort indice de perte de cheveux.",
+            "price_range": "Selon configuration"
+        }
+        
+        final_result = {"individual_results": results, "aggregated_result": aggregated}
+        print("DEBUG: Final aggregated result =", final_result)
         
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
-            stade = json_result.get("stade", "").strip()
-            if stade and stade in pricing:
-                json_result["price_range"] = f"{pricing[stade]}€"
+            # Si une tarification est définie pour un stade particulier, on peut ajuster pour la vue la plus avancée
+            if aggregated_stage in pricing:
+                aggregated["price_range"] = f"{pricing[aggregated_stage]}€"
         
         new_quota = quota - 1
         update_clinic_quota(db, api_key, new_quota)
-        save_analysis(db, api_key, client_email, json_result)
+        save_analysis(db, api_key, client_email, final_result)
         
         if clinic_config and clinic_config.get("email_clinique"):
             background_tasks.add_task(
                 send_email_task,
                 clinic_config["email_clinique"],
                 "New Analysis Result",
-                f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
+                f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(final_result, indent=2)}"
             )
-        
         background_tasks.add_task(
             send_email_task,
             client_email,
             "Your Analysis Result",
-            f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
+            f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(final_result, indent=2)}\n\nThank you for your trust."
         )
-        return json_result
+        return final_result
     except Exception as e:
         print("DEBUG: Exception in analyze:", e)
         raise HTTPException(status_code=500, detail=str(e))
