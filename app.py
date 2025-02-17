@@ -191,25 +191,23 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
 
 # Fonction pour analyser une image individuelle via GPT-4o-mini
 async def analyze_image_with_openai(file: UploadFile, label: str, client_instance: AsyncOpenAI) -> dict:
-    # Redimensionner l'image à 512x512 pour conserver les détails
     img = Image.open(BytesIO(await file.read())).resize((512, 512))
     buffered = BytesIO()
     img.save(buffered, format="JPEG", quality=85)
     b64_image = base64.b64encode(buffered.getvalue()).decode()
 
-    # Prompt enrichi avec les informations de l'échelle Hamilton-Norwood
     prompt = (
         "Vous êtes un expert en restauration capillaire. Utilisez l'échelle de Hamilton-Norwood suivante pour évaluer la perte de cheveux chez un homme :\n\n"
         "Stade 1: Aucun signe visible de calvitie ou de dégarnissement.\n"
         "Stade 2: Légère perte sur la ligne frontale (ligne mature) et éventuellement une légère perte au vertex.\n"
-        "Stade 3: Perte cliniquement significative avec dégarnissement des golfes temporaux et/ou du vertex (stade 3 vertex).\n"
+        "Stade 3: Perte cliniquement significative, avec dégarnissement des golfes temporaux et/ou du vertex (stade 3 vertex).\n"
         "Stade 4: Perte importante de la ligne frontale, avec une bande de cheveux reliant les côtés.\n"
         "Stade 5: Calvitie avancée, avec élargissement des zones dégarnies et amincissement de la bande.\n"
         "Stade 6: Perte très avancée, avec disparition quasi totale de la zone centrale (des tempes au vertex) et une fine couronne résiduelle.\n"
         "Stade 7: Calvitie totale sur le sommet, avec cheveux uniquement sur les côtés et l'arrière.\n\n"
-        "Fournissez une réponse strictement au format JSON sans aucun commentaire supplémentaire, sous le format :\n"
+        "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire, sous le format :\n"
         "{\"stade\": \"<numéro du stade Norwood>\", \"price_range\": \"<fourchette tarifaire>\", \"details\": \"<description détaillée>\", \"evaluation\": \"<évaluation précise>\"}\n\n"
-        "Analysez l'image (vue : " + label + ") en vous basant sur la répartition et la densité des cheveux. "
+        "Analysez précisément l'image (vue : " + label + ") en vous basant sur la répartition et la densité des cheveux. "
         "Voici l'image encodée en base64 : " + b64_image
     )
 
@@ -221,7 +219,6 @@ async def analyze_image_with_openai(file: UploadFile, label: str, client_instanc
     )
     raw_content = response.choices[0].message.content.strip()
     print("DEBUG: Raw response for", label, ":", raw_content)
-    # Nettoyage des éventuels marqueurs markdown
     raw_content = re.sub(r"^```(?:json)?\n", "", raw_content)
     raw_content = re.sub(r"\n```$", "", raw_content)
     if not raw_content:
@@ -272,15 +269,26 @@ async def analyze(
             results[view_label] = result
             print(f"DEBUG: Résultat pour {view_label} :", result)
         
-        final_result = results
-        print("DEBUG: Final result =", final_result)
+        # Agréger le stade en prenant le maximum parmi les stades détectés
+        try:
+            stages = [int(results[view]["stade"]) for view in results if results[view].get("stade") and results[view]["stade"].isdigit()]
+            aggregated_stage = str(max(stages)) if stages else "N/A"
+        except Exception as e:
+            aggregated_stage = "N/A"
+        aggregated = {
+            "stade": aggregated_stage,
+            "details": "Analyse agrégée basée sur les vues individuelles.",
+            "evaluation": "Le stade final est basé sur la vue présentant le plus fort indice de perte de cheveux.",
+            "price_range": "Selon configuration"
+        }
+        
+        final_result = {"individual_results": results, "aggregated_result": aggregated}
+        print("DEBUG: Final aggregated result =", final_result)
         
         if clinic_config and "pricing" in clinic_config:
             pricing = clinic_config["pricing"]
-            for view in final_result:
-                stage = final_result[view].get("stade", "").strip()
-                if stage and stage in pricing:
-                    final_result[view]["price_range"] = f"{pricing[stage]}€"
+            if aggregated_stage in pricing:
+                aggregated["price_range"] = f"{pricing[aggregated_stage]}€"
         
         new_quota = quota - 1
         update_clinic_quota(db, api_key, new_quota)
@@ -291,13 +299,13 @@ async def analyze(
                 send_email_task,
                 clinic_config["email_clinique"],
                 "New Analysis Result",
-                f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(final_result, indent=2)}"
+                f"Here is the aggregated analysis result for a client ({client_email}):\n\n{json.dumps(final_result, indent=2)}"
             )
         background_tasks.add_task(
             send_email_task,
             client_email,
             "Your Analysis Result",
-            f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(final_result, indent=2)}\n\nThank you for your trust."
+            f"Hello,\n\nHere is your aggregated analysis result:\n\n{json.dumps(final_result, indent=2)}\n\nThank you for your trust."
         )
         return final_result
     except Exception as e:
