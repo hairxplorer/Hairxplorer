@@ -1,6 +1,10 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
+# Pour OpenAI, on utilise la variable OPENAI_API_KEY définie dans les variables d'environnement.
+
 import json
-import re
 import smtplib
 import base64
 from email.mime.text import MIMEText
@@ -15,9 +19,6 @@ from PIL import Image
 from io import BytesIO
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = FastAPI()
 
@@ -174,14 +175,12 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
     subscription_start = clinic_config.get("subscription_start")
     now = datetime.utcnow()
     reset_quota = False
-
     if subscription_start:
         start_dt = datetime.fromisoformat(subscription_start)
         if now - start_dt >= timedelta(days=30):
             reset_quota = True
     else:
         reset_quota = True
-
     if reset_quota:
         default_quota = clinic_config.get("default_quota")
         if default_quota is None:
@@ -190,6 +189,33 @@ def reset_quota_if_needed(db: psycopg2.extensions.connection, clinic_config: dic
         clinic_config["analysis_quota"] = default_quota
         clinic_config["subscription_start"] = now.isoformat()
     print("DEBUG: reset_quota_if_needed finished")
+
+# Fonction pour analyser une image individuelle via GPT-4o-mini
+async def analyze_image_with_openai(file: UploadFile, label: str, client_instance: AsyncOpenAI) -> dict:
+    # Redimensionner l'image à 512x512 pour conserver les détails
+    img = Image.open(BytesIO(await file.read())).resize((512, 512))
+    buffered = BytesIO()
+    img.save(buffered, format="JPEG", quality=85)
+    b64_image = base64.b64encode(buffered.getvalue()).decode()
+
+    prompt = (
+        "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
+        "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
+        "{\"stade\": \"<numéro du stade Norwood>\", "
+        "\"price_range\": \"<fourchette tarifaire basée sur la configuration>\", "
+        "\"details\": \"<description détaillée de l'analyse>\", "
+        "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
+        "Analysez précisément l'image (vue : " + label + ") en vous basant sur la répartition et la densité des cheveux. "
+        "Voici l'image encodée en base64 : " + b64_image
+    )
+
+    response = await client_instance.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=300,
+        temperature=0.1
+    )
+    return json.loads(response.choices[0].message.content)
 
 @app.post("/analyze")
 async def analyze(
@@ -208,101 +234,58 @@ async def analyze(
         print("DEBUG: api_key =", api_key)
         print("DEBUG: client_email =", client_email)
         print("DEBUG: consent =", consent)
-
         if not consent:
             raise HTTPException(status_code=400, detail="You must consent to the use of your data.")
-
         clinic_config = get_clinic_config(db, api_key)
         print("DEBUG: clinic_config =", clinic_config)
         if not clinic_config:
             raise HTTPException(status_code=404, detail="Clinic not found")
-
         reset_quota_if_needed(db, clinic_config, api_key)
-
         quota = clinic_config.get("analysis_quota")
         if quota is None:
             raise HTTPException(status_code=400, detail="Quota is not defined for this clinic")
         if isinstance(quota, int) and quota <= 0:
             raise HTTPException(status_code=403, detail="Analysis quota exhausted")
-
-        # Réduire la taille de l'image pour diminuer le nombre de tokens (256x256 pour chaque vue)
-        images = [
-            Image.open(BytesIO(await file.read())).resize((256, 256))
-            for file in [front, top, side, back]
-        ]
-        # Créer une grille de 512x512
-        grid = Image.new('RGB', (512, 512))
-        grid.paste(images[0], (0, 0))
-        grid.paste(images[1], (256, 0))
-        grid.paste(images[2], (0, 256))
-        grid.paste(images[3], (256, 256))
-        buffered = BytesIO()
-        grid.save(buffered, format="JPEG", quality=50)
-        b64_image = base64.b64encode(buffered.getvalue()).decode()
-
-        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "Fournissez une réponse strictement au format JSON, sans aucun commentaire supplémentaire. "
-                            "La réponse doit respecter exactement ce format, sans mentionner de traitement ni de chirurgie :\n"
-                            "{\"stade\": \"<numéro du stade Norwood>\", "
-                            "\"price_range\": \"<fourchette tarifaire basée sur la configuration>\", "
-                            "\"details\": \"<description détaillée de l'analyse>\", "
-                            "\"evaluation\": \"<évaluation précise sur l'échelle Norwood>\"}\n\n"
-                            "Analysez précisément l'image en vous basant sur la densité et la répartition des cheveux sur l'ensemble du cuir chevelu. "
-                            "Identifiez l'unification éventuelle des zones dégarnies ainsi que la présence d'une couronne résiduelle, sans présupposer le stade attendu. "
-                            "Justifiez ensuite le choix de la fourchette tarifaire en fonction des indices visuels extraits. "
-                            "Voici l'image encodée en base64 : " + b64_image
-                        )
-                    }
-                ],
-                max_tokens=500,
-                temperature=0.1
-            )
-            raw_response = response.choices[0].message.content
-            print("DEBUG: OpenAI Response =", raw_response)
-            match = re.search(r'\{.*\}', raw_response, re.DOTALL)
-            if not match:
-                raise HTTPException(status_code=500, detail="Invalid response from OpenAI: No JSON found.")
-            json_str = match.group(0)
-            print("DEBUG: Extracted JSON =", json_str)
-
-            json_result = json.loads(json_str)
-
-            if clinic_config and "pricing" in clinic_config:
-                pricing = clinic_config["pricing"]
-                stade = json_result.get("stade", "").strip()
-                if stade and stade in pricing:
-                    json_result["price_range"] = f"{pricing[stade]}€"
-
-            new_quota = quota - 1
-            update_clinic_quota(db, api_key, new_quota)
-            save_analysis(db, api_key, client_email, json_result)
-
-            if clinic_config and clinic_config.get("email_clinique"):
-                background_tasks.add_task(
-                    send_email_task,
-                    clinic_config["email_clinique"],
-                    "New Analysis Result",
-                    f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(json_result, indent=2)}"
-                )
-
+        
+        # Analyse individuelle des images
+        client_instance = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        views = {"front": front, "top": top, "side": side, "back": back}
+        results = {}
+        for view_label, file in views.items():
+            result = await analyze_image_with_openai(file, view_label, client_instance)
+            results[view_label] = result
+            print(f"DEBUG: Résultat pour {view_label} :", result)
+        
+        # On renvoie directement les résultats individuels sans agrégation
+        final_result = results
+        print("DEBUG: Final result =", final_result)
+        
+        if clinic_config and "pricing" in clinic_config:
+            pricing = clinic_config["pricing"]
+            # Vous pouvez éventuellement ajuster la tarification ici en fonction de chaque vue
+            for view in final_result:
+                stage = final_result[view].get("stade", "").strip()
+                if stage and stage in pricing:
+                    final_result[view]["price_range"] = f"{pricing[stage]}€"
+        
+        new_quota = quota - 1
+        update_clinic_quota(db, api_key, new_quota)
+        save_analysis(db, api_key, client_email, final_result)
+        
+        if clinic_config and clinic_config.get("email_clinique"):
             background_tasks.add_task(
-                    send_email_task,
-                    client_email,
-                    "Your Analysis Result",
-                    f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(json_result, indent=2)}\n\nThank you for your trust."
+                send_email_task,
+                clinic_config["email_clinique"],
+                "New Analysis Result",
+                f"Here is the analysis result for a client ({client_email}):\n\n{json.dumps(final_result, indent=2)}"
             )
-            return json_result
-
-        except Exception as e:
-            print("DEBUG: Exception in analyze:", e)
-            raise HTTPException(status_code=500, detail=str(e))
+        background_tasks.add_task(
+            send_email_task,
+            client_email,
+            "Your Analysis Result",
+            f"Hello,\n\nHere is your analysis result:\n\n{json.dumps(final_result, indent=2)}\n\nThank you for your trust."
+        )
+        return final_result
 
     except Exception as e:
         print("DEBUG: Exception in analyze:", e)
@@ -320,10 +303,8 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: psycopg
     except Exception as e:
         print(f"DEBUG: Erreur Pydantic: {e}")
         return
-
     existing_config = get_clinic_config(db, config_data.api_key)
     print("DEBUG: existing_config:", existing_config)
-
     try:
         if existing_config:
             print("DEBUG: Updating existing config")
@@ -346,7 +327,6 @@ async def update_config(config_data: ClinicConfigUpdate = Body(...), db: psycopg
             cursor.close()
             print("DEBUG: Insert query executed and changes committed.")
         return {"status": "success"}
-
     except Exception as e:
         print("DEBUG: Exception in update_config:", e)
         raise HTTPException(status_code=500, detail="Error updating/creating configuration: " + str(e))
@@ -356,13 +336,10 @@ async def reset_quota(api_key: str = Form(...), admin_key: str = Form(...), db: 
     print("DEBUG: /reset_quota called")
     if admin_key != os.getenv("ADMIN_API_KEY"):
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     clinic_config = get_clinic_config(db, api_key)
     if not clinic_config:
         raise HTTPException(status_code=404, detail="Clinic not found")
-
     update_clinic_quota(db, api_key, clinic_config["default_quota"])
-
     return {"status": "success", "message": f"Quota for clinic {api_key} reset to {clinic_config['default_quota']}"}
 
 @app.on_event("startup")
